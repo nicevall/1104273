@@ -1,0 +1,98 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Firebase
+/android/app/google-services.json
+/ios/Runner/GoogleService-Info.plist
+/lib/firebase_options.dart
+
+# Functions
+/functions/node_modules/
+/functions/lib/
+
+# Environment
+.env
+.env.*
+
+# User Requested Ignores (Documentation & Reports)
+*.md
+README.md
+README_*.md
+INFORME_*.md
+*GUIDE.md
+*SUMMARY.md
+*CHECKLIST.md
+SRS_*.md
+UniRide_*.md
+
+# Temporary & Agent Files
+tmpclaude-*
+.gemini/
+antigravity/
+Capturas_Stitch/
+.claude/
+
+# Security & Secrets
+*.pem
+*.key
+*.keystore
+*.jks
+key.properties
+secret.dart
+credentials.json
+
+# Heavy Files & Build Artifacts (Generated)
+node_modules/
+**/ios/Pods/
+**/macos/Pods/
+.gradle/
+build/
+.dart_tool/
+.pub-cache/
+
+# Platform Specific (Standard Flutter additions)
+windows/flutter/ephemeral/
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
