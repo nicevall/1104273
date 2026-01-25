@@ -95,40 +95,57 @@ class RegisterStep5ConfirmEvent extends RegistrationEvent {
 
 /// Step 6 (Condicional): Registrar vehículo
 /// Solo para rol 'conductor' o 'ambos'
+/// Incluye verificación KYC de documentos
+/// Datos extraídos mediante OCR de matrícula y licencia
 class RegisterVehicleEvent extends RegistrationEvent {
-  final String brand;
-  final String model;
-  final int year;
-  final String color;
-  final String plate;
-  final int capacity;
-  final bool hasAirConditioning;
+  final String userId;
   final File vehiclePhoto;
+  final File registrationPhoto; // Foto de matrícula vehicular
   final File licensePhoto;
+  final Map<String, String> vehicleData; // Datos extraídos de matrícula
+  final Map<String, dynamic>? licenseData; // Datos extraídos de licencia
+  final String vehicleOwnership; // 'mio', 'familiar', 'amigo'
+  final String driverRelation; // 'yo', 'familiar', 'amigo'
 
   const RegisterVehicleEvent({
-    required this.brand,
-    required this.model,
-    required this.year,
-    required this.color,
-    required this.plate,
-    required this.capacity,
-    required this.hasAirConditioning,
+    required this.userId,
     required this.vehiclePhoto,
+    required this.registrationPhoto,
     required this.licensePhoto,
+    required this.vehicleData,
+    this.licenseData,
+    required this.vehicleOwnership,
+    required this.driverRelation,
   });
+
+  // Getters para acceder a los datos del vehículo
+  String get brand => vehicleData['marca'] ?? '';
+  String get model => vehicleData['modelo'] ?? '';
+  String get year => vehicleData['año'] ?? '';
+  String get color => vehicleData['color'] ?? '';
+  String get plate => vehicleData['placa'] ?? '';
+  String? get vinChasis => vehicleData['vin_chasis'];
+  String? get claseVehiculo => vehicleData['clase_vehiculo'];
+  String? get pasajeros => vehicleData['pasajeros'];
+
+  // Getters para acceder a los datos de licencia
+  String? get licenseNumber => licenseData?['numero_licencia'] as String?;
+  String? get licenseHolderName => licenseData != null
+      ? '${licenseData!['nombres'] ?? ''} ${licenseData!['apellidos'] ?? ''}'.trim()
+      : null;
+  String? get licenseCategory => licenseData?['categoria'] as String?;
+  String? get licenseExpiration => licenseData?['fecha_vencimiento'] as String?;
 
   @override
   List<Object?> get props => [
-        brand,
-        model,
-        year,
-        color,
-        plate,
-        capacity,
-        hasAirConditioning,
+        userId,
         vehiclePhoto,
+        registrationPhoto,
         licensePhoto,
+        vehicleData,
+        licenseData,
+        vehicleOwnership,
+        driverRelation,
       ];
 }
 
@@ -146,4 +163,19 @@ class CancelRegistrationEvent extends RegistrationEvent {
 /// Volver al paso anterior
 class GoBackEvent extends RegistrationEvent {
   const GoBackEvent();
+}
+
+/// Reanudar registro incompleto
+/// Para usuarios que existen en Auth pero no completaron el registro
+class ResumeRegistrationEvent extends RegistrationEvent {
+  final String userId;
+  final String email;
+
+  const ResumeRegistrationEvent({
+    required this.userId,
+    required this.email,
+  });
+
+  @override
+  List<Object?> get props => [userId, email];
 }

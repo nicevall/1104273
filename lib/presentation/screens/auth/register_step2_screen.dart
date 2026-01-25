@@ -104,6 +104,26 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
     });
   }
 
+  /// Mostrar diálogo de que no puede volver
+  void _showCannotGoBackDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('No puedes volver'),
+        content: const Text(
+          'Tu correo y contraseña ya fueron registrados. Debes verificar tu correo para continuar.\n\n'
+          'Si deseas cancelar el registro, usa el botón "Cancelar registro" más abajo.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Cancelar registro
   void _handleCancelRegistration() {
     showDialog(
@@ -136,23 +156,27 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
-          onPressed: _handleCancelRegistration,
-        ),
-        title: Text(
-          'Verificación',
-          style: AppTextStyles.h3.copyWith(
-            color: AppColors.textPrimary,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) {
+          _showCannotGoBackDialog();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          // Sin botón de retroceso - el usuario debe verificar su email
+          title: Text(
+            'Verificación',
+            style: AppTextStyles.h3.copyWith(
+              color: AppColors.textPrimary,
+            ),
           ),
         ),
-      ),
-      body: BlocConsumer<RegistrationBloc, RegistrationState>(
+        body: BlocConsumer<RegistrationBloc, RegistrationState>(
         listener: (context, state) {
           if (state is RegistrationStep3) {
             // Email verificado - navegar a Step 3
@@ -366,10 +390,24 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
                     ],
                   ),
                 ),
+                const SizedBox(height: AppDimensions.spacingXL),
+
+                // Botón cancelar registro
+                TextButton(
+                  onPressed: _handleCancelRegistration,
+                  child: Text(
+                    'Cancelar registro',
+                    style: AppTextStyles.body2.copyWith(
+                      color: AppColors.error,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
               ],
             ),
           );
         },
+        ),
       ),
     );
   }

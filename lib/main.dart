@@ -4,6 +4,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'config/routes/app_router.dart';
 import 'core/theme/app_theme.dart';
@@ -21,6 +23,15 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // Inicializar App Check con Debug provider para desarrollo
+  // Para producción, cambiar a AndroidProvider.playIntegrity
+  await FirebaseAppCheck.instance.activate(
+    androidProvider: AndroidProvider.debug,
+  );
+
+  // Configurar idioma de Firebase Auth para emails
+  await FirebaseAuth.instance.setLanguageCode('es');
 
   // Configurar orientación vertical únicamente
   await SystemChrome.setPreferredOrientations([
@@ -64,6 +75,7 @@ class MyApp extends StatelessWidget {
           create: (context) => RegistrationBloc(
             authService: authService,
             storageService: storageService,
+            firestoreService: firestoreService,
           ),
         ),
       ],

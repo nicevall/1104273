@@ -27,8 +27,50 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
 
+  // Estado para validación instantánea del email
+  bool _emailTouched = false;
+  String? _emailError;
+
+  @override
+  void initState() {
+    super.initState();
+    // Escuchar cambios en el email para validación instantánea
+    _emailController.addListener(_checkEmailDomain);
+  }
+
+  /// Validar dominio del email en tiempo real
+  void _checkEmailDomain() {
+    final email = _emailController.text.trim();
+
+    setState(() {
+      // Solo mostrar feedback cuando haya escrito algo después del @
+      if (email.contains('@')) {
+        final atIndex = email.indexOf('@');
+        final afterAt = email.substring(atIndex + 1);
+
+        // Solo mostrar feedback si hay al menos 1 caracter después del @
+        if (afterAt.isNotEmpty) {
+          _emailTouched = true;
+          if (!email.endsWith('@uide.edu.ec')) {
+            _emailError = 'Solo se permiten correos @uide.edu.ec';
+          } else {
+            // Validar formato completo
+            _emailError = Validators.validateEmail(email);
+          }
+        } else {
+          _emailTouched = false;
+          _emailError = null;
+        }
+      } else {
+        _emailTouched = false;
+        _emailError = null;
+      }
+    });
+  }
+
   @override
   void dispose() {
+    _emailController.removeListener(_checkEmailDomain);
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -69,6 +111,20 @@ class _LoginScreenState extends State<LoginScreen> {
               'userId': state.userId,
               'email': state.email,
             });
+          } else if (state is IncompleteRegistration) {
+            // Registro incompleto → continuar desde donde se quedó
+            if (state.emailVerified) {
+              // Email ya verificado → ir a Step 3
+              context.go('/register/step3', extra: {
+                'userId': state.userId,
+              });
+            } else {
+              // Email no verificado → ir a Step 2
+              context.go('/register/step2', extra: {
+                'userId': state.userId,
+                'email': state.email,
+              });
+            }
           } else if (state is AuthError) {
             // Mostrar error
             ScaffoldMessenger.of(context).showSnackBar(
@@ -115,8 +171,64 @@ class _LoginScreenState extends State<LoginScreen> {
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
                       prefixIcon: Icons.email_outlined,
+                      suffixIcon: _emailTouched
+                          ? (_emailError == null
+                              ? const Icon(Icons.check_circle,
+                                  color: AppColors.success)
+                              : const Icon(Icons.cancel,
+                                  color: AppColors.error))
+                          : null,
                       validator: Validators.validateEmail,
                     ),
+                    const SizedBox(height: AppDimensions.spacingS),
+
+                    // Feedback instantáneo del email
+                    if (_emailTouched && _emailError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(
+                          left: AppDimensions.paddingL,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.cancel,
+                              size: 16,
+                              color: AppColors.error,
+                            ),
+                            const SizedBox(width: AppDimensions.spacingS),
+                            Expanded(
+                              child: Text(
+                                _emailError!,
+                                style: AppTextStyles.caption.copyWith(
+                                  color: AppColors.error,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (_emailTouched && _emailError == null)
+                      Padding(
+                        padding: const EdgeInsets.only(
+                          left: AppDimensions.paddingL,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.check_circle,
+                              size: 16,
+                              color: AppColors.success,
+                            ),
+                            const SizedBox(width: AppDimensions.spacingS),
+                            Text(
+                              'Correo institucional válido',
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.success,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     const SizedBox(height: AppDimensions.spacingM),
 
                     // Campo de contraseña
@@ -134,16 +246,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
-                        onPressed: () {
-                          // TODO: Implementar recuperación de contraseña
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Función de recuperación próximamente',
-                              ),
-                            ),
-                          );
-                        },
+                        onPressed: () => context.push('/forgot-password'),
                         child: Text(
                           '¿Olvidaste tu contraseña?',
                           style: AppTextStyles.body2.copyWith(

@@ -11,6 +11,7 @@ class FirebaseStorageService {
   static const String _profilePhotosPath = 'profile_photos';
   static const String _vehiclePhotosPath = 'vehicle_photos';
   static const String _licensePhotosPath = 'license_photos';
+  static const String _registrationPhotosPath = 'registration_photos'; // Matrícula vehicular
 
   /// Subir foto de perfil del usuario
   ///
@@ -120,6 +121,41 @@ class FirebaseStorageService {
     }
   }
 
+  /// Subir foto de matrícula vehicular
+  ///
+  /// Sube a: registration_photos/{userId}/registration_{timestamp}.jpg
+  /// Retorna URL de descarga
+  /// IMPORTANTE: Datos sensibles, debe tener permisos restrictivos
+  Future<String> uploadRegistrationPhoto({
+    required String userId,
+    required File imageFile,
+  }) async {
+    try {
+      final fileName = 'registration_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final ref = _storage.ref().child('$_registrationPhotosPath/$userId/$fileName');
+
+      final metadata = SettableMetadata(
+        contentType: 'image/jpeg',
+        customMetadata: {
+          'userId': userId,
+          'uploadedAt': DateTime.now().toIso8601String(),
+          'type': 'vehicle_registration',
+          'sensitive': 'true', // Marcador para datos sensibles
+        },
+      );
+
+      final uploadTask = ref.putFile(imageFile, metadata);
+      final snapshot = await uploadTask.whenComplete(() {});
+      final downloadUrl = await snapshot.ref.getDownloadURL();
+
+      return downloadUrl;
+    } on FirebaseException catch (e) {
+      throw _handleStorageError(e);
+    } catch (e) {
+      throw Exception('Error al subir foto de matrícula: $e');
+    }
+  }
+
   /// Eliminar foto por URL
   ///
   /// Útil para eliminar fotos antiguas al actualizar
@@ -154,6 +190,10 @@ class FirebaseStorageService {
       // Eliminar fotos de licencia
       final licenseRef = _storage.ref().child('$_licensePhotosPath/$userId');
       await _deleteFolder(licenseRef);
+
+      // Eliminar fotos de matrícula
+      final registrationRef = _storage.ref().child('$_registrationPhotosPath/$userId');
+      await _deleteFolder(registrationRef);
     } catch (e) {
       throw Exception('Error al eliminar fotos del usuario: $e');
     }

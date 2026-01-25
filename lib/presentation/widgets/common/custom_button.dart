@@ -142,6 +142,9 @@ class CustomButton extends StatelessWidget {
 
   /// Contenido del botón (texto + icono opcional)
   Widget _buildButtonContent() {
+    // Usar estilo sin color para que herede el foregroundColor del botón
+    final textStyle = isPrimary ? AppTextStyles.button : AppTextStyles.buttonSecondary;
+
     if (icon != null) {
       return Row(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -150,7 +153,7 @@ class CustomButton extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             text,
-            style: AppTextStyles.button,
+            style: textStyle,
           ),
         ],
       );
@@ -158,7 +161,7 @@ class CustomButton extends StatelessWidget {
 
     return Text(
       text,
-      style: AppTextStyles.button,
+      style: textStyle,
     );
   }
 }

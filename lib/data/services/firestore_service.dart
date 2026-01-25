@@ -195,6 +195,34 @@ class FirestoreService {
     }
   }
 
+  /// Verificar si un número de teléfono ya está registrado
+  ///
+  /// Retorna true si el número ya existe (duplicado)
+  /// Opcionalmente excluye un userId específico (para edición de perfil)
+  Future<bool> isPhoneNumberTaken(String phoneNumber, {String? excludeUserId}) async {
+    try {
+      final querySnapshot = await _firestore
+          .collection(_usersCollection)
+          .where('phoneNumber', isEqualTo: phoneNumber)
+          .limit(1)
+          .get();
+
+      if (querySnapshot.docs.isEmpty) {
+        return false;
+      }
+
+      // Si hay un userId a excluir (edición de perfil), verificar
+      if (excludeUserId != null) {
+        return querySnapshot.docs.first.id != excludeUserId;
+      }
+
+      return true;
+    } catch (e) {
+      // En caso de error, permitir continuar (se validará en el backend)
+      return false;
+    }
+  }
+
   /// Obtener usuarios por rol (útil para admin)
   ///
   /// Roles: 'pasajero', 'conductor', 'ambos'

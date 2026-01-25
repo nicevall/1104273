@@ -101,10 +101,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       final user = await _firestoreService.getUser(firebaseUser.uid);
 
       if (user == null) {
-        // Usuario no existe en Firestore (inconsistencia)
-        await _authService.logout();
-        emit(const AuthError(
-          error: 'Usuario no encontrado en la base de datos',
+        // Usuario existe en Auth pero NO en Firestore
+        // Esto significa que no completó el registro
+        // Redirigir a continuar el registro
+        emit(IncompleteRegistration(
+          userId: firebaseUser.uid,
+          email: firebaseUser.email ?? event.email,
+          emailVerified: firebaseUser.emailVerified,
         ));
         return;
       }
@@ -161,8 +164,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       final user = await _firestoreService.getUser(firebaseUser.uid);
 
       if (user == null) {
-        await _authService.logout();
-        emit(const Unauthenticated());
+        // Usuario existe en Auth pero no en Firestore
+        // Esto es NORMAL durante el flujo de registro (antes de completar)
+        // NO hacer logout aquí - dejar que el flujo de registro continúe
+        // Solo emitir Unauthenticated si NO estamos en proceso de registro
+        // Por ahora, simplemente no emitir nada y dejar el estado actual
         return;
       }
 

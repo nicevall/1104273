@@ -48,14 +48,20 @@ class _RegisterStep1ScreenState extends State<RegisterStep1Screen> {
   }
 
   /// Validar dominio del email en tiempo real
+  /// Solo muestra feedback DESPUÉS de que el usuario escriba algo del dominio
   void _checkEmailDomain() {
     final email = _emailController.text.trim();
 
     setState(() {
-      if (email.isNotEmpty) {
-        _emailTouched = true;
-        // Solo validar el dominio si contiene @
-        if (email.contains('@')) {
+      // Solo mostrar feedback cuando haya escrito algo después del @
+      // (ej: "usuario@u" o más)
+      if (email.contains('@')) {
+        final atIndex = email.indexOf('@');
+        final afterAt = email.substring(atIndex + 1);
+
+        // Solo mostrar feedback si hay al menos 1 caracter después del @
+        if (afterAt.isNotEmpty) {
+          _emailTouched = true;
           if (!email.endsWith('@uide.edu.ec')) {
             _emailError = 'Solo se permiten correos @uide.edu.ec';
           } else {
@@ -63,9 +69,12 @@ class _RegisterStep1ScreenState extends State<RegisterStep1Screen> {
             _emailError = Validators.validateEmail(email);
           }
         } else {
-          _emailError = null; // Aún no ha escrito el @
+          // Solo tiene @ pero nada después, no mostrar feedback aún
+          _emailTouched = false;
+          _emailError = null;
         }
       } else {
+        // No tiene @, no mostrar feedback
         _emailTouched = false;
         _emailError = null;
       }
@@ -85,6 +94,26 @@ class _RegisterStep1ScreenState extends State<RegisterStep1Screen> {
         _passwordsMatch = false;
       }
     });
+  }
+
+  /// Verificar si todos los requisitos del formulario están cumplidos
+  bool get _isFormValid {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+    final confirmPassword = _confirmPasswordController.text;
+
+    // 1. Email válido (dominio @uide.edu.ec y formato correcto)
+    final isEmailValid = Validators.validateEmail(email) == null;
+
+    // 2. Contraseña cumple todos los requisitos
+    final isPasswordValid = Validators.validatePassword(password) == null;
+
+    // 3. Las contraseñas coinciden
+    final doPasswordsMatch = password.isNotEmpty &&
+        confirmPassword.isNotEmpty &&
+        password == confirmPassword;
+
+    return isEmailValid && isPasswordValid && doPasswordsMatch;
   }
 
   @override
@@ -332,10 +361,10 @@ class _RegisterStep1ScreenState extends State<RegisterStep1Screen> {
                       ),
                     const SizedBox(height: AppDimensions.spacingXL),
 
-                    // Botón continuar
+                    // Botón continuar (solo habilitado si todos los requisitos están cumplidos)
                     CustomButton.primary(
                       text: 'Continuar',
-                      onPressed: isLoading ? null : _handleContinue,
+                      onPressed: isLoading || !_isFormValid ? null : _handleContinue,
                       isLoading: isLoading,
                     ),
                     const SizedBox(height: AppDimensions.spacingM),

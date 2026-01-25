@@ -21,6 +21,9 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   Timer? _autoScrollTimer;
   int _currentPage = 0;
 
+  // Para "presiona atrás otra vez para salir"
+  DateTime? _lastBackPressTime;
+
   // Duración del auto-scroll (10 segundos)
   static const Duration _autoScrollDuration = Duration(seconds: 10);
 
@@ -76,11 +79,39 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
     });
   }
 
+  /// Manejar botón atrás - doble tap para salir
+  Future<bool> _onWillPop() async {
+    final now = DateTime.now();
+    if (_lastBackPressTime == null ||
+        now.difference(_lastBackPressTime!) > const Duration(seconds: 2)) {
+      _lastBackPressTime = now;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Presiona atrás otra vez para salir'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return false;
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: SafeArea(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (!didPop) {
+          final shouldPop = await _onWillPop();
+          if (shouldPop && context.mounted) {
+            Navigator.of(context).pop();
+          }
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(AppDimensions.paddingL),
           child: Column(
@@ -115,6 +146,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
             ],
           ),
         ),
+      ),
       ),
     );
   }

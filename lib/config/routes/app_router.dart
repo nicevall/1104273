@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import '../../presentation/screens/auth/splash_screen.dart';
 import '../../presentation/screens/auth/welcome_screen.dart';
 import '../../presentation/screens/auth/login_screen.dart';
+import '../../presentation/screens/auth/forgot_password_screen.dart';
 import '../../presentation/screens/auth/register_step1_screen.dart';
 import '../../presentation/screens/auth/register_step2_screen.dart';
 import '../../presentation/screens/auth/register_step3_screen.dart';
@@ -10,6 +11,11 @@ import '../../presentation/screens/auth/register_step4_screen.dart';
 import '../../presentation/screens/auth/register_step5_screen.dart';
 import '../../presentation/screens/auth/register_vehicle_screen.dart';
 import '../../presentation/screens/auth/registration_status_screen.dart';
+import '../../presentation/screens/vehicle/vehicle_questions_screen.dart';
+import '../../presentation/screens/vehicle/vehicle_matricula_screen.dart';
+import '../../presentation/screens/vehicle/vehicle_license_screen.dart';
+import '../../presentation/screens/vehicle/vehicle_photo_screen.dart';
+import '../../presentation/screens/vehicle/vehicle_summary_screen.dart';
 
 /// Router de la aplicación con go_router
 /// Define todas las rutas y navegación de UniRide
@@ -38,6 +44,13 @@ final GoRouter appRouter = GoRouter(
       path: '/login',
       name: 'login',
       builder: (context, state) => const LoginScreen(),
+    ),
+
+    // Forgot Password Screen
+    GoRoute(
+      path: '/forgot-password',
+      name: 'forgot-password',
+      builder: (context, state) => const ForgotPasswordScreen(),
     ),
 
     // Registration Flow
@@ -105,6 +118,92 @@ final GoRouter appRouter = GoRouter(
       },
     ),
 
+    // ==================== VEHICLE REGISTRATION FLOW ====================
+
+    // Vehicle Questions (Step 1)
+    GoRoute(
+      path: '/register/vehicle/questions',
+      name: 'register-vehicle-questions',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return VehicleQuestionsScreen(
+          userId: extra?['userId'] as String? ?? '',
+          role: extra?['role'] as String? ?? 'conductor',
+        );
+      },
+    ),
+
+    // Vehicle Matricula (Step 2)
+    GoRoute(
+      path: '/register/vehicle/matricula',
+      name: 'register-vehicle-matricula',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return VehicleMatriculaScreen(
+          userId: extra?['userId'] as String? ?? '',
+          role: extra?['role'] as String? ?? 'conductor',
+          vehicleOwnership: extra?['vehicleOwnership'] as String? ?? '',
+          driverRelation: extra?['driverRelation'] as String? ?? '',
+        );
+      },
+    ),
+
+    // Vehicle License (Step 3)
+    GoRoute(
+      path: '/register/vehicle/license',
+      name: 'register-vehicle-license',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return VehicleLicenseScreen(
+          userId: extra?['userId'] as String? ?? '',
+          role: extra?['role'] as String? ?? 'conductor',
+          vehicleOwnership: extra?['vehicleOwnership'] as String? ?? '',
+          driverRelation: extra?['driverRelation'] as String? ?? '',
+          matriculaPhotoPath: extra?['matriculaPhoto'] as String? ?? '',
+          vehicleData: (extra?['vehicleData'] as Map<String, String>?) ?? {},
+        );
+      },
+    ),
+
+    // Vehicle Photo (Step 4)
+    GoRoute(
+      path: '/register/vehicle/photo',
+      name: 'register-vehicle-photo',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return VehiclePhotoScreen(
+          userId: extra?['userId'] as String? ?? '',
+          role: extra?['role'] as String? ?? 'conductor',
+          vehicleOwnership: extra?['vehicleOwnership'] as String? ?? '',
+          driverRelation: extra?['driverRelation'] as String? ?? '',
+          matriculaPhotoPath: extra?['matriculaPhoto'] as String? ?? '',
+          licensePhotoPath: extra?['licensePhoto'] as String? ?? '',
+          licenseData: extra?['licenseData'] as Map<String, dynamic>?,
+          vehicleData: (extra?['vehicleData'] as Map<String, String>?) ?? {},
+        );
+      },
+    ),
+
+    // Vehicle Summary (Step 5)
+    GoRoute(
+      path: '/register/vehicle/summary',
+      name: 'register-vehicle-summary',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return VehicleSummaryScreen(
+          userId: extra?['userId'] as String? ?? '',
+          role: extra?['role'] as String? ?? 'conductor',
+          vehicleOwnership: extra?['vehicleOwnership'] as String? ?? '',
+          driverRelation: extra?['driverRelation'] as String? ?? '',
+          matriculaPhotoPath: extra?['matriculaPhoto'] as String? ?? '',
+          licensePhotoPath: extra?['licensePhoto'] as String? ?? '',
+          licenseData: extra?['licenseData'] as Map<String, dynamic>?,
+          vehicleData: (extra?['vehicleData'] as Map<String, String>?) ?? {},
+          vehiclePhotoPath: extra?['vehiclePhoto'] as String? ?? '',
+        );
+      },
+    ),
+
     GoRoute(
       path: '/register/status',
       name: 'register-status',
@@ -127,6 +226,13 @@ final GoRouter appRouter = GoRouter(
       path: '/home',
       name: 'home',
       builder: (context, state) => const _TempHomeScreen(),
+    ),
+
+    // Driver Home (temporal)
+    GoRoute(
+      path: '/driver/home',
+      name: 'driver-home',
+      builder: (context, state) => const _TempDriverHomeScreen(),
     ),
 
     // ==================== ERROR HANDLING ====================
@@ -189,6 +295,61 @@ class _TempHomeScreen extends StatelessWidget {
               padding: EdgeInsets.symmetric(horizontal: 40),
               child: Text(
                 'Esta pantalla se implementará en las próximas fases del proyecto.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey),
+              ),
+            ),
+            const SizedBox(height: 32),
+            ElevatedButton(
+              onPressed: () => context.go('/welcome'),
+              child: const Text('Volver al inicio'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Pantalla temporal de conductor (placeholder)
+class _TempDriverHomeScreen extends StatelessWidget {
+  const _TempDriverHomeScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('UniRide - Conductor'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () => context.go('/welcome'),
+            tooltip: 'Cerrar sesión',
+          ),
+        ],
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.check_circle,
+              size: 80,
+              color: Colors.green,
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              '¡Registro completado!',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 40),
+              child: Text(
+                'Tu vehículo ha sido registrado exitosamente. La pantalla del conductor se implementará en próximas fases.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.grey),
               ),

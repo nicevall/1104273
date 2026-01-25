@@ -28,6 +28,11 @@ class RegisterStep4Screen extends StatefulWidget {
 class _RegisterStep4ScreenState extends State<RegisterStep4Screen> {
   String? _selectedRole;
 
+  /// Volver al paso anterior
+  void _handleGoBack() {
+    context.read<RegistrationBloc>().add(const GoBackEvent());
+  }
+
   /// Continuar a Step 5
   void _handleContinue() {
     if (_selectedRole == null) {
@@ -47,31 +52,43 @@ class _RegisterStep4ScreenState extends State<RegisterStep4Screen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
-          onPressed: () => context.pop(),
-        ),
-        title: Text(
-          'Registro',
-          style: AppTextStyles.h3.copyWith(
-            color: AppColors.textPrimary,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) {
+          _handleGoBack();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
+            onPressed: _handleGoBack,
+          ),
+          title: Text(
+            'Registro',
+            style: AppTextStyles.h3.copyWith(
+              color: AppColors.textPrimary,
+            ),
           ),
         ),
-      ),
-      body: BlocConsumer<RegistrationBloc, RegistrationState>(
-        listener: (context, state) {
-          if (state is RegistrationStep5) {
-            // Navegar a Step 5
-            context.push('/register/step5', extra: {
-              'userId': state.userId,
-              'role': state.role,
-            });
-          } else if (state is RegistrationFailure) {
+        body: BlocConsumer<RegistrationBloc, RegistrationState>(
+          listener: (context, state) {
+            if (state is RegistrationStep3) {
+              // Volver a Step 3
+              context.go('/register/step3', extra: {
+                'userId': state.userId,
+              });
+            } else if (state is RegistrationStep5) {
+              // Navegar a Step 5
+              context.push('/register/step5', extra: {
+                'userId': state.userId,
+                'role': state.role,
+              });
+            } else if (state is RegistrationFailure) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(state.error),
@@ -166,10 +183,12 @@ class _RegisterStep4ScreenState extends State<RegisterStep4Screen> {
                   ),
                   const SizedBox(height: AppDimensions.spacingXL),
 
-                  // Botón continuar
+                  // Botón continuar (solo habilitado si hay un rol seleccionado)
                   CustomButton.primary(
                     text: 'Continuar',
-                    onPressed: isLoading ? null : _handleContinue,
+                    onPressed: isLoading || _selectedRole == null
+                        ? null
+                        : _handleContinue,
                     isLoading: isLoading,
                   ),
                 ],
@@ -177,6 +196,7 @@ class _RegisterStep4ScreenState extends State<RegisterStep4Screen> {
             ),
           );
         },
+        ),
       ),
     );
   }

@@ -20,6 +20,7 @@ class AppColors {
   // Colores de texto
   static const Color textPrimary = Color(0xFF1C1B1F); // Negro Suave
   static const Color textSecondary = Color(0xFF757575); // Gris Medio
+  static const Color textTertiary = Color(0xFFAAAAAA); // Gris Claro
 
   // Estados
   static const Color success = Color(0xFF4CAF50); // Verde

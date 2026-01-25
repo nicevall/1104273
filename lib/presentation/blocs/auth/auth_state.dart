@@ -73,3 +73,20 @@ class AuthenticatedNotVerified extends AuthState {
   @override
   List<Object?> get props => [userId, email];
 }
+
+/// Usuario existe en Firebase Auth pero no completó el registro en Firestore
+/// Redirigir a continuar el registro desde Step 3
+class IncompleteRegistration extends AuthState {
+  final String userId;
+  final String email;
+  final bool emailVerified;
+
+  const IncompleteRegistration({
+    required this.userId,
+    required this.email,
+    required this.emailVerified,
+  });
+
+  @override
+  List<Object?> get props => [userId, email, emailVerified];
+}

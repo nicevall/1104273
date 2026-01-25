@@ -62,8 +62,8 @@ class FirebaseAuthService {
     } on FirebaseAuthException catch (e) {
       throw _handleAuthError(e);
     } catch (e) {
-      if (e is Exception) rethrow;
-      throw Exception('Error de red. Verifica tu conexión.');
+      if (e is Exception) rethrow; // Allow original exception to bubble up
+      throw Exception('Error desconocido: ${e.toString()}'); // Show actual error
     }
   }
 
@@ -212,9 +212,17 @@ class FirebaseAuthService {
   /// Enviar email para recuperar contraseña
   Future<void> resetPassword({required String email}) async {
     try {
+      // Validar dominio
+      if (!email.endsWith('@uide.edu.ec')) {
+        throw Exception('Solo se permiten correos @uide.edu.ec');
+      }
+
       await _auth.sendPasswordResetEmail(email: email);
     } on FirebaseAuthException catch (e) {
-      throw _handleAuthError(e);
+      throw Exception(_handleAuthError(e));
+    } catch (e) {
+      if (e is Exception) rethrow;
+      throw Exception('Error al enviar email de recuperación');
     }
   }
 
