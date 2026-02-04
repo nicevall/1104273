@@ -14,6 +14,7 @@ class UserModel extends Equatable {
   final int semester;
   final String role; // 'pasajero', 'conductor', 'ambos'
   final bool isVerified;
+  final bool hasVehicle; // true si tiene vehículo registrado
   final double rating;
   final int totalTrips;
   final String? profilePhotoUrl;
@@ -30,6 +31,7 @@ class UserModel extends Equatable {
     required this.semester,
     required this.role,
     required this.isVerified,
+    this.hasVehicle = false,
     this.rating = 5.0,
     this.totalTrips = 0,
     this.profilePhotoUrl,
@@ -46,6 +48,9 @@ class UserModel extends Equatable {
   // Es pasajero
   bool get isPassenger => role == 'pasajero' || role == 'ambos';
 
+  // Necesita registrar vehículo (es conductor/ambos pero no tiene vehículo)
+  bool get needsVehicleRegistration => isDriver && !hasVehicle;
+
   // Crear desde JSON (Firestore)
   factory UserModel.fromJson(Map<String, dynamic> json) {
     return UserModel(
@@ -58,6 +63,7 @@ class UserModel extends Equatable {
       semester: json['semester'] as int,
       role: json['role'] as String,
       isVerified: json['isVerified'] as bool? ?? false,
+      hasVehicle: json['hasVehicle'] as bool? ?? false,
       rating: (json['rating'] as num?)?.toDouble() ?? 5.0,
       totalTrips: json['totalTrips'] as int? ?? 0,
       profilePhotoUrl: json['profilePhotoUrl'] as String?,
@@ -78,6 +84,7 @@ class UserModel extends Equatable {
       'semester': semester,
       'role': role,
       'isVerified': isVerified,
+      'hasVehicle': hasVehicle,
       'rating': rating,
       'totalTrips': totalTrips,
       'profilePhotoUrl': profilePhotoUrl,
@@ -103,6 +110,7 @@ class UserModel extends Equatable {
     int? semester,
     String? role,
     bool? isVerified,
+    bool? hasVehicle,
     double? rating,
     int? totalTrips,
     String? profilePhotoUrl,
@@ -119,6 +127,7 @@ class UserModel extends Equatable {
       semester: semester ?? this.semester,
       role: role ?? this.role,
       isVerified: isVerified ?? this.isVerified,
+      hasVehicle: hasVehicle ?? this.hasVehicle,
       rating: rating ?? this.rating,
       totalTrips: totalTrips ?? this.totalTrips,
       profilePhotoUrl: profilePhotoUrl ?? this.profilePhotoUrl,
@@ -138,6 +147,7 @@ class UserModel extends Equatable {
         semester,
         role,
         isVerified,
+        hasVehicle,
         rating,
         totalTrips,
         profilePhotoUrl,

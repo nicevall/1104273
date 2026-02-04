@@ -125,20 +125,24 @@ class _RegisterStep5ScreenState extends State<RegisterStep5Screen> {
               context.go('/register/step4', extra: {
                 'userId': state.userId,
               });
-            } else if (state is RegistrationVehicle) {
-              // Navegar a nuevo flujo de registro de vehículo (preguntas primero)
-              context.go('/register/vehicle/questions', extra: {
-                'userId': state.userId,
-                'role': state.role,
-              });
             } else if (state is RegistrationSuccess) {
-              // Ir a pantalla de estado de registro
-              context.go('/register/status', extra: {
+              // Registro completado - ir al home
+              // El registro de vehículo ahora es post-login
+              context.go('/home', extra: {
                 'userId': state.userId,
-                'role': state.role,
+                'userRole': state.role,
                 'hasVehicle': state.hasVehicle,
-                'status': 'success',
               });
+            } else if (state is RegistrationLoading) {
+              // Mostrar indicador de carga (ya se maneja en el UI)
+            } else if (state is RegistrationFailure) {
+              // Mostrar error
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Error: ${state.error}'),
+                  backgroundColor: AppColors.error,
+                ),
+              );
             }
           },
         child: SafeArea(

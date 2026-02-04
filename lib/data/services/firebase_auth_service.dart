@@ -24,6 +24,15 @@ class FirebaseAuthService {
   /// Verificar si el email está verificado
   bool get isEmailVerified => _auth.currentUser?.emailVerified ?? false;
 
+  /// Refrescar token de autenticación
+  /// Útil antes de operaciones largas como subir fotos
+  Future<void> refreshToken() async {
+    final user = _auth.currentUser;
+    if (user != null) {
+      await user.getIdToken(true);
+    }
+  }
+
   // ============================================================================
   // FLUJO DE REGISTRO (Verificación por link nativo de Firebase)
   // ============================================================================
@@ -126,6 +135,16 @@ class FirebaseAuthService {
     Map<String, dynamic>? vehicle,
   }) async {
     try {
+      // Refrescar el token antes de llamar a la función
+      // Esto evita errores de "unauthenticated" si el proceso de registro fue largo
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('No hay usuario autenticado. Inicia sesión nuevamente.');
+      }
+
+      // Forzar refresh del token
+      await user.getIdToken(true);
+
       final result = await _functions.httpsCallable('completeRegistration').call({
         'firstName': firstName,
         'lastName': lastName,
@@ -140,6 +159,7 @@ class FirebaseAuthService {
     } on FirebaseFunctionsException catch (e) {
       throw _handleFunctionsError(e);
     } catch (e) {
+      if (e is Exception) rethrow;
       throw Exception('Error de red. Verifica tu conexión.');
     }
   }
@@ -153,10 +173,35 @@ class FirebaseAuthService {
         'exists': result.data['exists'] as bool,
         'isProfileComplete': result.data['isProfileComplete'] as bool,
         'role': result.data['role'],
+        'hasVehicle': result.data['hasVehicle'] as bool? ?? false,
       };
     } on FirebaseFunctionsException catch (e) {
       throw _handleFunctionsError(e);
     } catch (e) {
+      throw Exception('Error de red. Verifica tu conexión.');
+    }
+  }
+
+  /// Registrar vehículo (post-login)
+  /// Para usuarios que ya completaron registro sin vehículo
+  Future<void> registerVehicle({
+    required Map<String, dynamic> vehicle,
+  }) async {
+    try {
+      // Refrescar token antes de operación
+      final user = _auth.currentUser;
+      if (user == null) {
+        throw Exception('No hay usuario autenticado. Inicia sesión nuevamente.');
+      }
+      await user.getIdToken(true);
+
+      await _functions.httpsCallable('registerVehicle').call({
+        'vehicle': vehicle,
+      });
+    } on FirebaseFunctionsException catch (e) {
+      throw _handleFunctionsError(e);
+    } catch (e) {
+      if (e is Exception) rethrow;
       throw Exception('Error de red. Verifica tu conexión.');
     }
   }

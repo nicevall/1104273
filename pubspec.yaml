@@ -49,6 +49,8 @@ dependencies:
 
   # KYC - Document Verification
   google_mlkit_text_recognition: ^0.13.0
+  widget_to_marker: ^1.0.6
+  flutter_dotenv: ^6.0.0
 
 dev_dependencies:
   flutter_test:
@@ -73,6 +75,7 @@ flutter:
   assets:
     - assets/images/
     - assets/icons/
+    - .env
 
   # fonts:
   #   - family: Poppins

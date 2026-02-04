@@ -11,11 +11,13 @@ import '../../widgets/common/custom_button.dart';
 class VehicleQuestionsScreen extends StatefulWidget {
   final String userId;
   final String role;
+  final bool isPostLogin; // true si viene del home después de iniciar sesión
 
   const VehicleQuestionsScreen({
     super.key,
     required this.userId,
     required this.role,
+    this.isPostLogin = false,
   });
 
   @override
@@ -36,6 +38,7 @@ class _VehicleQuestionsScreenState extends State<VehicleQuestionsScreen> {
       'role': widget.role,
       'vehicleOwnership': _vehicleOwnership,
       'driverRelation': _driverRelation,
+      'isPostLogin': widget.isPostLogin,
     });
   }
 

@@ -46,6 +46,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     CheckAuthStatusEvent event,
     Emitter<AuthState> emit,
   ) async {
+    print('🔐 AuthBloc: Verificando estado de autenticación...');
     emit(const AuthLoading());
 
     try {
@@ -53,22 +54,34 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
       if (firebaseUser == null) {
         // No hay usuario autenticado
+        print('🔐 AuthBloc: No hay usuario en Firebase Auth → Unauthenticated');
         emit(const Unauthenticated());
         return;
       }
+
+      print('🔐 AuthBloc: Usuario encontrado en Firebase Auth: ${firebaseUser.uid}');
+      print('🔐 AuthBloc: Email: ${firebaseUser.email}');
+      print('🔐 AuthBloc: Email verificado: ${firebaseUser.emailVerified}');
 
       // Obtener datos del usuario desde Firestore
       final user = await _firestoreService.getUser(firebaseUser.uid);
 
       if (user == null) {
         // Usuario existe en Auth pero no en Firestore (raro, error de sincronización)
+        print('🔐 AuthBloc: Usuario NO existe en Firestore → Logout y Unauthenticated');
         await _authService.logout();
         emit(const Unauthenticated());
         return;
       }
 
+      print('🔐 AuthBloc: Usuario encontrado en Firestore: ${user.fullName}');
+      print('🔐 AuthBloc: isVerified: ${user.isVerified}');
+      print('🔐 AuthBloc: role: ${user.role}');
+      print('🔐 AuthBloc: hasVehicle: ${user.hasVehicle}');
+
       // Verificar si el usuario completó la verificación OTP
       if (!user.isVerified) {
+        print('🔐 AuthBloc: Usuario NO verificado → AuthenticatedNotVerified');
         emit(AuthenticatedNotVerified(
           userId: user.userId,
           email: user.email,
@@ -77,8 +90,10 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       }
 
       // Usuario completamente autenticado y verificado
+      print('🔐 AuthBloc: Usuario AUTENTICADO → Authenticated');
       emit(Authenticated(user: user));
     } catch (e) {
+      print('🔐 AuthBloc: ERROR → $e');
       emit(AuthError(error: 'Error al verificar autenticación: $e'));
     }
   }
@@ -134,10 +149,13 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     LogoutEvent event,
     Emitter<AuthState> emit,
   ) async {
+    print('🔐 AuthBloc: Cerrando sesión...');
     try {
       await _authService.logout();
+      print('🔐 AuthBloc: Sesión cerrada exitosamente → Unauthenticated');
       emit(const Unauthenticated());
     } catch (e) {
+      print('🔐 AuthBloc: Error al cerrar sesión: $e');
       emit(AuthError(error: 'Error al cerrar sesión: $e'));
     }
   }

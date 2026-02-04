@@ -119,7 +119,10 @@ class RegistrationStatusScreen extends StatelessWidget {
               // Botón ir a inicio
               CustomButton(
                 text: 'Ir a inicio',
-                onPressed: () => context.go('/home'),
+                onPressed: () => context.go('/home', extra: {
+                  'userId': userId,
+                  'userRole': role,
+                }),
                 isPrimary: false,
               ),
             ],

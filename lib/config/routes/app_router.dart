@@ -16,6 +16,14 @@ import '../../presentation/screens/vehicle/vehicle_matricula_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_license_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_photo_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_summary_screen.dart';
+import '../../presentation/screens/home/main_navigation_screen.dart';
+import '../../presentation/screens/profile/profile_screen.dart';
+import '../../presentation/screens/trip/plan_trip_screen.dart';
+import '../../presentation/screens/trip/map_route_screen.dart';
+import '../../presentation/screens/trip/trip_preferences_screen.dart';
+import '../../presentation/screens/trip/confirm_pickup_screen.dart';
+import '../../presentation/screens/trip/pick_location_screen.dart';
+import '../../presentation/screens/trip/searching_drivers_screen.dart';
 
 /// Router de la aplicación con go_router
 /// Define todas las rutas y navegación de UniRide
@@ -219,16 +227,148 @@ final GoRouter appRouter = GoRouter(
     ),
 
     // ==================== MAIN APP ROUTES ====================
-    // TODO: Implementar en próximas fases
 
-    // Home Screen (temporal)
+    // Home Screen con Bottom Navigation
     GoRoute(
       path: '/home',
       name: 'home',
-      builder: (context, state) => const _TempHomeScreen(),
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return MainNavigationScreen(
+          userId: extra?['userId'] as String? ?? '',
+          userRole: extra?['userRole'] as String? ?? 'pasajero',
+          hasVehicle: extra?['hasVehicle'] as bool? ?? false,
+        );
+      },
     ),
 
-    // Driver Home (temporal)
+    // Profile Screen - Accesible desde el avatar en HomeScreen
+    GoRoute(
+      path: '/profile',
+      name: 'profile',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return ProfileScreen(
+          userId: extra?['userId'] as String? ?? '',
+        );
+      },
+    ),
+
+    // ==================== VEHICLE REGISTRATION (POST-LOGIN) ====================
+
+    // Vehicle Registration Entry - Redirige al flujo de registro de vehículo
+    GoRoute(
+      path: '/vehicle/register',
+      name: 'vehicle-register',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return VehicleQuestionsScreen(
+          userId: extra?['userId'] as String? ?? '',
+          role: extra?['role'] as String? ?? 'conductor',
+          isPostLogin: true,
+        );
+      },
+    ),
+
+    // ==================== TRIP ROUTES (FASE 2) ====================
+
+    // Plan Trip Screen - Buscar destino
+    GoRoute(
+      path: '/trip/plan',
+      name: 'trip-plan',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return PlanTripScreen(
+          userId: extra?['userId'] as String? ?? '',
+          userRole: extra?['userRole'] as String? ?? 'pasajero',
+          preselectedDestination: extra?['destination'] as Map<String, dynamic>?,
+        );
+      },
+    ),
+
+    // Map Route Screen - Mapa con origen/destino
+    GoRoute(
+      path: '/trip/map',
+      name: 'trip-map',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return MapRouteScreen(
+          userId: extra?['userId'] as String? ?? '',
+          userRole: extra?['userRole'] as String? ?? 'pasajero',
+          origin: extra?['origin'] as Map<String, dynamic>? ?? {},
+          destination: extra?['destination'] as Map<String, dynamic>? ?? {},
+        );
+      },
+    ),
+
+    // Pick Location Screen - Elegir ubicación en el mapa
+    GoRoute(
+      path: '/trip/pick-location',
+      name: 'trip-pick-location',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return PickLocationScreen(
+          userId: extra?['userId'] as String? ?? '',
+          userRole: extra?['userRole'] as String? ?? 'pasajero',
+          originLatitude: extra?['originLatitude'] as double? ?? -3.9931,
+          originLongitude: extra?['originLongitude'] as double? ?? -79.2042,
+          originAddress: extra?['originAddress'] as String? ?? '',
+        );
+      },
+    ),
+
+    // Trip Preferences Screen - Detalles de recogida
+    GoRoute(
+      path: '/trip/preferences',
+      name: 'trip-preferences',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return TripPreferencesScreen(
+          userId: extra?['userId'] as String? ?? '',
+          currentPreference: extra?['currentPreference'] as String?,
+          currentDescription: extra?['currentDescription'] as String?,
+        );
+      },
+    ),
+
+    // Confirm Pickup Screen - Confirmar punto de recogida
+    GoRoute(
+      path: '/trip/confirm-pickup',
+      name: 'trip-confirm-pickup',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return ConfirmPickupScreen(
+          userId: extra?['userId'] as String? ?? '',
+          userRole: extra?['userRole'] as String? ?? 'pasajero',
+          origin: extra?['origin'] as Map<String, dynamic>? ?? {},
+          destination: extra?['destination'] as Map<String, dynamic>? ?? {},
+          preference: extra?['preference'] as String? ?? 'mochila',
+          preferenceDescription: extra?['preferenceDescription'] as String? ?? '',
+          paymentMethod: extra?['paymentMethod'] as String? ?? 'Efectivo',
+        );
+      },
+    ),
+
+    // Searching Drivers Screen - Pantalla de búsqueda de conductores
+    GoRoute(
+      path: '/trip/search-results',
+      name: 'trip-search-results',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return SearchingDriversScreen(
+          userId: extra?['userId'] as String? ?? '',
+          userRole: extra?['userRole'] as String? ?? 'pasajero',
+          origin: extra?['origin'] as Map<String, dynamic>? ?? {},
+          destination: extra?['destination'] as Map<String, dynamic>? ?? {},
+          pickupLocation: extra?['pickupLocation'] as Map<String, dynamic>? ?? {},
+          preference: extra?['preference'] as String? ?? 'mochila',
+          preferenceDescription: extra?['preferenceDescription'] as String? ?? '',
+          paymentMethod: extra?['paymentMethod'] as String? ?? 'Efectivo',
+        );
+      },
+    ),
+
+    // Driver Home (temporal - próximamente)
     GoRoute(
       path: '/driver/home',
       name: 'driver-home',

@@ -256,24 +256,19 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
     ));
   }
 
-  /// Step 5: Confirmar advertencia
-  void _onRegisterStep5Confirm(
+  /// Step 5: Confirmar advertencia y REGISTRAR USUARIO
+  /// NUEVO FLUJO: Siempre se registra al usuario aquí, sin importar el rol
+  /// El registro de vehículo ahora es un paso separado post-login
+  Future<void> _onRegisterStep5Confirm(
     RegisterStep5ConfirmEvent event,
     Emitter<RegistrationState> emit,
-  ) {
+  ) async {
     final currentState = state;
     if (currentState is! RegistrationStep5) return;
 
-    // Si es conductor o ambos, ir a registro de vehículo
-    if (currentState.role == 'conductor' || currentState.role == 'ambos') {
-      emit(RegistrationVehicle(
-        userId: currentState.userId,
-        role: currentState.role,
-      ));
-    } else {
-      // Si es pasajero, completar registro
-      add(const CompleteRegistrationEvent());
-    }
+    // SIEMPRE registrar al usuario aquí (sin vehículo)
+    // El registro de vehículo se hace después del login si es necesario
+    add(const CompleteRegistrationEvent());
   }
 
   /// Step 6 (Condicional): Registrar vehículo y completar
@@ -287,6 +282,10 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
 
     try {
       final userId = event.userId;
+
+      // 0. Refrescar token antes de operaciones largas
+      // Esto evita errores de "unauthenticated" si el proceso de registro fue largo
+      await _authService.refreshToken();
 
       // 1. Subir foto del vehículo
       final vehiclePhotoUrl = await _storageService.uploadVehiclePhoto(

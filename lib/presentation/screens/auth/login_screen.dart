@@ -103,8 +103,23 @@ class _LoginScreenState extends State<LoginScreen> {
       body: BlocConsumer<AuthBloc, AuthState>(
         listener: (context, state) {
           if (state is Authenticated) {
-            // Login exitoso → ir a home
-            context.go('/home');
+            final user = state.user;
+
+            // Si es conductor puro y no tiene vehículo, ir al registro de vehículo
+            if (user.role == 'conductor' && !user.hasVehicle) {
+              context.go('/vehicle/register', extra: {
+                'userId': user.userId,
+                'role': user.role,
+              });
+              return;
+            }
+
+            // Login exitoso → ir a home con datos del usuario
+            context.go('/home', extra: {
+              'userId': user.userId,
+              'userRole': user.role,
+              'hasVehicle': user.hasVehicle,
+            });
           } else if (state is AuthenticatedNotVerified) {
             // No verificado → ir a verificación OTP
             context.go('/register/step2', extra: {

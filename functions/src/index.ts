@@ -59,7 +59,10 @@ export const completeRegistration = functions.https.onCall(async (data, context)
       throw new functions.https.HttpsError('already-exists', 'El perfil ya está completo');
     }
 
-    // 5. Crear/actualizar documento de usuario en Firestore
+    // 5. Determinar si tiene vehículo
+    const hasVehicle = (role === 'conductor' || role === 'ambos') && vehicle != null;
+
+    // 6. Crear/actualizar documento de usuario en Firestore
     await db.collection('users').doc(userId).set({
       userId,
       email: userEmail,
@@ -71,6 +74,7 @@ export const completeRegistration = functions.https.onCall(async (data, context)
       role,
       isVerified: true,
       isProfileComplete: true,
+      hasVehicle,
       rating: 5.0,
       totalTrips: 0,
       profilePhotoUrl: null,
@@ -78,7 +82,7 @@ export const completeRegistration = functions.https.onCall(async (data, context)
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 
-    // 6. Si es conductor/ambos y tiene vehículo, crear vehículo
+    // 7. Si es conductor/ambos y tiene vehículo, crear vehículo
     if ((role === 'conductor' || role === 'ambos') && vehicle) {
       await db.collection('vehicles').add({
         ownerId: userId,
@@ -131,11 +135,92 @@ export const checkRegistrationStatus = functions.https.onCall(async (data, conte
       exists: userDoc.exists,
       isProfileComplete: userDoc.data()?.isProfileComplete || false,
       role: userDoc.data()?.role || null,
+      hasVehicle: userDoc.data()?.hasVehicle || false,
     };
   } catch (error: any) {
     console.error('Error en checkRegistrationStatus:', error);
     if (error instanceof functions.https.HttpsError) throw error;
     throw new functions.https.HttpsError('internal', 'Error al verificar estado');
+  }
+});
+
+// ============================================================================
+// REGISTRAR VEHÍCULO (Post-login para conductores)
+// ============================================================================
+
+/**
+ * Registrar vehículo - Para usuarios que ya completaron registro sin vehículo
+ * Actualiza hasVehicle a true y crea el documento del vehículo
+ */
+export const registerVehicle = functions.https.onCall(async (data, context) => {
+  try {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Debes iniciar sesión');
+    }
+
+    const userId = context.auth.uid;
+
+    // Verificar que el usuario existe y es conductor/ambos
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'Usuario no encontrado');
+    }
+
+    const userData = userDoc.data();
+    if (userData?.role !== 'conductor' && userData?.role !== 'ambos') {
+      throw new functions.https.HttpsError('failed-precondition', 'Solo conductores pueden registrar vehículos');
+    }
+
+    if (userData?.hasVehicle) {
+      throw new functions.https.HttpsError('already-exists', 'Ya tienes un vehículo registrado');
+    }
+
+    const { vehicle } = data;
+
+    if (!vehicle || !vehicle.plate) {
+      throw new functions.https.HttpsError('invalid-argument', 'Datos del vehículo incompletos');
+    }
+
+    // Crear documento del vehículo
+    await db.collection('vehicles').add({
+      ownerId: userId,
+      brand: vehicle.brand,
+      model: vehicle.model,
+      year: vehicle.year,
+      color: vehicle.color,
+      plate: vehicle.plate.toUpperCase(),
+      vinChasis: vehicle.vinChasis || null,
+      claseVehiculo: vehicle.claseVehiculo || null,
+      pasajeros: vehicle.pasajeros || 4,
+      photoUrl: vehicle.photoUrl || null,
+      licensePhotoUrl: vehicle.licensePhotoUrl || null,
+      registrationPhotoUrl: vehicle.registrationPhotoUrl || null,
+      licenseNumber: vehicle.licenseNumber || null,
+      licenseHolderName: vehicle.licenseHolderName || null,
+      licenseCategory: vehicle.licenseCategory || null,
+      licenseExpiration: vehicle.licenseExpiration || null,
+      vehicleOwnership: vehicle.vehicleOwnership || null,
+      driverRelation: vehicle.driverRelation || null,
+      isVerified: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Actualizar usuario con hasVehicle = true
+    await db.collection('users').doc(userId).update({
+      hasVehicle: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`Vehículo registrado para usuario: ${userId}`);
+
+    return {
+      success: true,
+      message: 'Vehículo registrado exitosamente',
+    };
+  } catch (error: any) {
+    console.error('Error en registerVehicle:', error);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', error.message || 'Error al registrar vehículo');
   }
 });
 

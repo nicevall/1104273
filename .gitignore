@@ -82,6 +82,7 @@ Capturas_Stitch/
 key.properties
 secret.dart
 credentials.json
+local.properties
 
 # Heavy Files & Build Artifacts (Generated)
 node_modules/

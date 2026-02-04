@@ -42,13 +42,19 @@ class VehicleSummaryScreen extends StatelessWidget {
     return BlocConsumer<RegistrationBloc, RegistrationState>(
       listener: (context, state) {
         if (state is RegistrationSuccess) {
-          // Registro exitoso, navegar al home del conductor
-          context.go('/driver/home');
+          // Registro exitoso, navegar al home con datos del usuario
+          context.go('/home', extra: {
+            'userId': state.userId,
+            'userRole': state.role,
+            'hasVehicle': true,
+          });
         } else if (state is RegistrationFailure) {
+          // Mostrar mensaje de error
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(state.error),
+              content: Text('Error al registrar: ${state.error}'),
               backgroundColor: AppColors.error,
+              duration: const Duration(seconds: 5),
             ),
           );
         }

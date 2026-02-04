@@ -33,8 +33,24 @@ class _SplashScreenState extends State<SplashScreen> {
         listener: (context, state) {
           // Navegar según el estado de autenticación
           if (state is Authenticated) {
-            // Usuario autenticado → ir a home
-            context.go('/home');
+            final user = state.user;
+
+            // Si es conductor puro (no "ambos") y no tiene vehículo,
+            // redirigir al registro de vehículo obligatorio
+            if (user.role == 'conductor' && !user.hasVehicle) {
+              context.go('/vehicle/register', extra: {
+                'userId': user.userId,
+                'role': user.role,
+              });
+              return;
+            }
+
+            // Usuario autenticado → ir a home con datos del usuario
+            context.go('/home', extra: {
+              'userId': user.userId,
+              'userRole': user.role,
+              'hasVehicle': user.hasVehicle,
+            });
           } else if (state is AuthenticatedNotVerified) {
             // Usuario no verificado → ir a verificación OTP
             context.go('/register/step2', extra: {
