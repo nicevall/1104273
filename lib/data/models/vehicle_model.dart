@@ -39,21 +39,41 @@ class VehicleModel extends Equatable {
   String get fullDescription => '$brand $model $year - $color';
 
   // Crear desde JSON (Firestore)
+  // Nota: La Cloud Function guarda 'pasajeros' pero el modelo usa 'capacity'
+  // También 'vehicleId' viene del doc.id via fromFirestore, no del JSON
   factory VehicleModel.fromJson(Map<String, dynamic> json) {
+    // capacity: acepta 'capacity' o 'pasajeros', convierte String a int si es necesario
+    int parseCapacity() {
+      final cap = json['capacity'] ?? json['pasajeros'] ?? 4;
+      if (cap is int) return cap;
+      if (cap is String) return int.tryParse(cap) ?? 4;
+      return 4;
+    }
+
+    // year: puede venir como String desde OCR
+    int parseYear() {
+      final y = json['year'];
+      if (y is int) return y;
+      if (y is String) return int.tryParse(y) ?? 2020;
+      return 2020;
+    }
+
     return VehicleModel(
-      vehicleId: json['vehicleId'] as String,
-      ownerId: json['ownerId'] as String,
-      brand: json['brand'] as String,
-      model: json['model'] as String,
-      year: json['year'] as int,
-      color: json['color'] as String,
-      plate: json['plate'] as String,
-      capacity: json['capacity'] as int,
+      vehicleId: json['vehicleId'] as String? ?? '',
+      ownerId: json['ownerId'] as String? ?? '',
+      brand: json['brand'] as String? ?? '',
+      model: json['model'] as String? ?? '',
+      year: parseYear(),
+      color: json['color'] as String? ?? '',
+      plate: json['plate'] as String? ?? '',
+      capacity: parseCapacity(),
       hasAirConditioning: json['hasAirConditioning'] as bool? ?? false,
-      photoUrl: json['photoUrl'] as String,
-      licensePhotoUrl: json['licensePhotoUrl'] as String,
+      photoUrl: json['photoUrl'] as String? ?? '',
+      licensePhotoUrl: json['licensePhotoUrl'] as String? ?? '',
       isVerified: json['isVerified'] as bool? ?? false,
-      createdAt: (json['createdAt'] as Timestamp).toDate(),
+      createdAt: json['createdAt'] is Timestamp
+          ? (json['createdAt'] as Timestamp).toDate()
+          : DateTime.now(),
     );
   }
 

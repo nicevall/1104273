@@ -6,9 +6,16 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../data/models/trip_model.dart';
+import '../../blocs/auth/auth_bloc.dart';
+import '../../blocs/auth/auth_state.dart';
+import '../../blocs/trip/trip_bloc.dart';
+import '../../blocs/trip/trip_event.dart';
+import '../../blocs/trip/trip_state.dart';
 
 class SearchingDriversScreen extends StatefulWidget {
   final String userId;
@@ -78,6 +85,56 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
   }
 
   void _startSearch() {
+    // === DEBUG: Imprimir todos los datos de la solicitud de viaje ===
+    // Obtener datos del usuario desde AuthBloc
+    String userName = 'No disponible';
+    String userPhone = 'No disponible';
+    String userEmail = 'No disponible';
+    final authState = context.read<AuthBloc>().state;
+    if (authState is Authenticated) {
+      userName = authState.user.fullName;
+      userPhone = authState.user.phoneNumber;
+      userEmail = authState.user.email;
+    }
+
+    debugPrint('╔══════════════════════════════════════════════════════════╗');
+    debugPrint('║          SOLICITUD DE VIAJE - DATOS COMPLETOS          ║');
+    debugPrint('╠══════════════════════════════════════════════════════════╣');
+    debugPrint('║ PASAJERO:');
+    debugPrint('║   nombre: $userName');
+    debugPrint('║   email: $userEmail');
+    debugPrint('║   teléfono: $userPhone');
+    debugPrint('║   userId: ${widget.userId}');
+    debugPrint('║   userRole: ${widget.userRole}');
+    debugPrint('╠══════════════════════════════════════════════════════════╣');
+    debugPrint('║ ORIGEN:');
+    debugPrint('║   name: ${widget.origin['name']}');
+    debugPrint('║   address: ${widget.origin['address']}');
+    debugPrint('║   latitude: ${widget.origin['latitude']}');
+    debugPrint('║   longitude: ${widget.origin['longitude']}');
+    debugPrint('╠══════════════════════════════════════════════════════════╣');
+    debugPrint('║ DESTINO:');
+    debugPrint('║   name: ${widget.destination['name']}');
+    debugPrint('║   address: ${widget.destination['address']}');
+    debugPrint('║   latitude: ${widget.destination['latitude']}');
+    debugPrint('║   longitude: ${widget.destination['longitude']}');
+    debugPrint('╠══════════════════════════════════════════════════════════╣');
+    debugPrint('║ PUNTO DE RECOGIDA:');
+    debugPrint('║   address: ${widget.pickupLocation['address']}');
+    debugPrint('║   latitude: ${widget.pickupLocation['latitude']}');
+    debugPrint('║   longitude: ${widget.pickupLocation['longitude']}');
+    debugPrint('║   reference: ${widget.pickupLocation['reference']}');
+    debugPrint('╠══════════════════════════════════════════════════════════╣');
+    debugPrint('║ PREFERENCIAS:');
+    debugPrint('║   preference: ${widget.preference}');
+    debugPrint('║   description: ${widget.preferenceDescription}');
+    debugPrint('╠══════════════════════════════════════════════════════════╣');
+    debugPrint('║ MÉTODO DE PAGO: ${widget.paymentMethod}');
+    debugPrint('╠══════════════════════════════════════════════════════════╣');
+    debugPrint('║ TIMESTAMP: ${DateTime.now().toIso8601String()}');
+    debugPrint('╚══════════════════════════════════════════════════════════╝');
+    // === FIN DEBUG ===
+
     _searchTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_remainingSeconds > 0) {
         setState(() {
@@ -88,8 +145,56 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
       }
     });
 
-    // Simulación: En producción esto se conectaría a Firebase
-    // Por ahora, después de 3 minutos muestra "No encontrado"
+    // Buscar viajes reales en Firestore
+    _searchTripsInFirestore();
+  }
+
+  void _searchTripsInFirestore() {
+    final originLat = widget.origin['latitude'] as double?;
+    final originLng = widget.origin['longitude'] as double?;
+    final destLat = widget.destination['latitude'] as double?;
+    final destLng = widget.destination['longitude'] as double?;
+
+    if (originLat != null && originLng != null &&
+        destLat != null && destLng != null) {
+      context.read<TripBloc>().add(SearchTripsEvent(
+        originLat: originLat,
+        originLng: originLng,
+        destLat: destLat,
+        destLng: destLng,
+        departureDate: DateTime.now(),
+        radiusKm: 5.0,
+      ));
+    }
+  }
+
+  void _onTripsFound(List<TripModel> trips) {
+    _searchTimer?.cancel();
+    if (trips.isNotEmpty) {
+      // Navegar a resultados con los viajes encontrados
+      final pickupPoint = widget.pickupLocation['latitude'] != null
+          ? TripLocation(
+              name: widget.pickupLocation['address'] as String? ?? '',
+              address: widget.pickupLocation['address'] as String? ?? '',
+              latitude: widget.pickupLocation['latitude'] as double,
+              longitude: widget.pickupLocation['longitude'] as double,
+            )
+          : null;
+
+      context.pushReplacement('/trip/results', extra: {
+        'trips': trips,
+        'userId': widget.userId,
+        'pickupPoint': pickupPoint,
+        'referenceNote': widget.pickupLocation['reference'] as String?,
+        'preferences': [widget.preference],
+        'preferenceDescription': widget.preferenceDescription,
+      });
+    } else {
+      setState(() {
+        _searchCompleted = true;
+        _driversFound = false;
+      });
+    }
   }
 
   void _onSearchTimeout() {
@@ -231,12 +336,22 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
           await _onWillPop();
         }
       },
-      child: Scaffold(
-        backgroundColor: AppColors.background,
-        body: SafeArea(
-          child: _searchCompleted && !_driversFound
-              ? _buildNoDriversFoundView()
-              : _buildSearchingView(),
+      child: BlocListener<TripBloc, TripState>(
+        listener: (context, state) {
+          if (state is TripsSearchResults) {
+            _onTripsFound(state.trips);
+          } else if (state is TripError) {
+            // Si hay error en la búsqueda, continuar con el timer
+            debugPrint('🔍 Error en búsqueda de viajes: ${state.error}');
+          }
+        },
+        child: Scaffold(
+          backgroundColor: AppColors.background,
+          body: SafeArea(
+            child: _searchCompleted && !_driversFound
+                ? _buildNoDriversFoundView()
+                : _buildSearchingView(),
+          ),
         ),
       ),
     );

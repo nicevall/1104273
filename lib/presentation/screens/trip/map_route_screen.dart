@@ -39,8 +39,7 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
   String _preferenceDescription = '';
   String _paymentMethod = 'Efectivo';
 
-  // Polyline y Markers
-  Set<Polyline> _polylines = {};
+  // Markers (sin polyline para no confundir con ruta real)
   Set<Marker> _markers = {};
 
   bool _markersCreated = false;
@@ -48,7 +47,6 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
   @override
   void initState() {
     super.initState();
-    _createPolyline();
     // Markers se crean después del primer frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _createCustomMarkers();
@@ -61,16 +59,16 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
     _markersCreated = true;
 
     try {
-      // Crear marker de origen (turquesa)
-      final originIcon = await _buildMarkerWidget(_originColor).toBitmapDescriptor(
-        logicalSize: const Size(48, 58),
-        imageSize: const Size(96, 116),
+      // Crear marker de origen (turquesa) - punto con etiqueta
+      final originIcon = await _buildOriginMarkerWidget(_originColor).toBitmapDescriptor(
+        logicalSize: const Size(100, 85),
+        imageSize: const Size(200, 170),
       );
 
-      // Crear marker de destino (verde menta)
-      final destinationIcon = await _buildMarkerWidget(_destinationColor).toBitmapDescriptor(
-        logicalSize: const Size(48, 58),
-        imageSize: const Size(96, 116),
+      // Crear marker de destino (verde menta) - bandera con etiqueta
+      final destinationIcon = await _buildDestinationMarkerWidget(_destinationColor).toBitmapDescriptor(
+        logicalSize: const Size(110, 90),
+        imageSize: const Size(220, 180),
       );
 
       if (mounted) {
@@ -80,13 +78,13 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
               markerId: const MarkerId('origin'),
               position: _originLatLng,
               icon: originIcon,
-              anchor: const Offset(0.5, 1.0),
+              anchor: const Offset(0.5, 1.0), // Ancla en la base del punto
             ),
             Marker(
               markerId: const MarkerId('destination'),
               position: _destinationLatLng,
               icon: destinationIcon,
-              anchor: const Offset(0.5, 1.0),
+              anchor: const Offset(0.5, 1.0), // Ancla en la base del asta
             ),
           };
         });
@@ -113,33 +111,62 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
     }
   }
 
-  /// Widget del marker (igual que pick_location_screen)
-  Widget _buildMarkerWidget(Color color) {
+  /// Widget del marker de ORIGEN (punto con etiqueta)
+  Widget _buildOriginMarkerWidget(Color color) {
     return Material(
       color: Colors.transparent,
       child: SizedBox(
-        width: 48,
-        height: 58,
-        child: Stack(
-          alignment: Alignment.topCenter,
+        width: 100,
+        height: 85,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            // Sombra circular
-            Positioned(
-              bottom: 0,
-              child: Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.4),
-                  shape: BoxShape.circle,
+            // Etiqueta SALIDA
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 6,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: const Text(
+                'SALIDA',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
             ),
-            // Icono del pin
-            Icon(
-              Icons.location_on,
-              size: 48,
+            // Línea conectora
+            Container(
+              width: 3,
+              height: 10,
               color: color,
+            ),
+            // Punto con halo
+            Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: color,
+                border: Border.all(color: Colors.white, width: 3),
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withOpacity(0.5),
+                    blurRadius: 8,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -147,25 +174,88 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
     );
   }
 
-  void _createPolyline() {
-    _polylines = {
-      Polyline(
-        polylineId: const PolylineId('route_base'),
-        points: [_originLatLng, _destinationLatLng],
-        color: _destinationColor.withOpacity(0.3),
-        width: 5,
+  /// Widget del marker de DESTINO (bandera con etiqueta)
+  Widget _buildDestinationMarkerWidget(Color color) {
+    return Material(
+      color: Colors.transparent,
+      child: SizedBox(
+        width: 110,
+        height: 90,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            // Etiqueta DESTINO con icono de bandera
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 6,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.flag_rounded,
+                    color: Colors.white,
+                    size: 16,
+                  ),
+                  SizedBox(width: 4),
+                  Text(
+                    'DESTINO',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Asta de la bandera
+            Container(
+              width: 3,
+              height: 22,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(1.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.25),
+                    blurRadius: 3,
+                    offset: const Offset(1, 1),
+                  ),
+                ],
+              ),
+            ),
+            // Base del asta
+            Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: color,
+                border: Border.all(color: Colors.white, width: 2.5),
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withOpacity(0.5),
+                    blurRadius: 5,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
-      Polyline(
-        polylineId: const PolylineId('route'),
-        points: [_originLatLng, _destinationLatLng],
-        color: _destinationColor,
-        width: 5,
-        patterns: [
-          PatternItem.dash(16),
-          PatternItem.gap(10),
-        ],
-      ),
-    };
+    );
   }
 
   @override
@@ -362,7 +452,7 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // Mapa con markers personalizados
+          // Mapa con markers personalizados (sin polyline para no confundir)
           GoogleMap(
             initialCameraPosition: CameraPosition(
               target: _originLatLng,
@@ -370,8 +460,7 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
             ),
             onMapCreated: _onMapCreated,
             markers: _markers,
-            polylines: _polylines,
-            myLocationEnabled: true,
+            myLocationEnabled: false, // Desactivar punto azul de ubicación
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
             mapToolbarEnabled: false,

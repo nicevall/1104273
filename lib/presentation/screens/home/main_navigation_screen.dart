@@ -6,10 +6,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../data/services/location_cache_service.dart';
 import '../../blocs/auth/auth_bloc.dart';
 import '../../blocs/auth/auth_state.dart';
+import '../../widgets/common/map_preloader.dart';
 import 'home_screen.dart';
 import 'activity_screen.dart';
 import 'messages_screen.dart';
@@ -18,12 +21,14 @@ class MainNavigationScreen extends StatefulWidget {
   final String userId;
   final String userRole; // 'pasajero', 'conductor', 'ambos'
   final bool hasVehicle; // true si tiene vehículo registrado
+  final String? activeRole; // Rol activo inicial (para mantener contexto al navegar)
 
   const MainNavigationScreen({
     super.key,
     required this.userId,
     required this.userRole,
     this.hasVehicle = false,
+    this.activeRole,
   });
 
   @override
@@ -55,8 +60,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         userId: _userId,
         userRole: _userRole,
         hasVehicle: _hasVehicle,
+        activeRole: widget.activeRole,
       ),
-      const ActivityScreen(),
+      ActivityScreen(userId: _userId),
       const MessagesScreen(),
     ];
   }
@@ -80,9 +86,32 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
         }
       },
       child: Scaffold(
-        body: IndexedStack(
-          index: _currentIndex,
-          children: _screens,
+        body: Stack(
+          children: [
+            // Precargador de Google Maps (invisible)
+            // Se inicializa en segundo plano para que el mapa
+            // esté listo cuando el usuario lo necesite
+            // Usa la ubicación cacheada del usuario si está disponible
+            Builder(
+              builder: (context) {
+                final cache = LocationCacheService();
+                if (cache.hasFreshLocation) {
+                  final loc = cache.cachedLocation!;
+                  return MapPreloader(
+                    initialPosition: LatLng(loc.latitude, loc.longitude),
+                  );
+                }
+                // Si no hay ubicación cacheada, usar ubicación por defecto (Quito)
+                return const MapPreloader();
+              },
+            ),
+
+            // Contenido principal con las pantallas
+            IndexedStack(
+              index: _currentIndex,
+              children: _screens,
+            ),
+          ],
         ),
         bottomNavigationBar: Container(
           decoration: BoxDecoration(

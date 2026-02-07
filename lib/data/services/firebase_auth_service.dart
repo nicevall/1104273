@@ -250,6 +250,38 @@ class FirebaseAuthService {
     }
   }
 
+  /// Eliminar cuenta actual con re-autenticación
+  /// Firebase requiere autenticación reciente para eliminar cuenta
+  Future<void> deleteCurrentUserWithReauth({
+    required String email,
+    required String password,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user != null) {
+        // Re-autenticar al usuario antes de eliminar
+        final credential = EmailAuthProvider.credential(
+          email: email,
+          password: password,
+        );
+        await user.reauthenticateWithCredential(credential);
+
+        // Ahora sí eliminar
+        await user.delete();
+      }
+    } catch (e) {
+      // Si falla la re-autenticación, intentar eliminar de todas formas
+      try {
+        final user = _auth.currentUser;
+        if (user != null) {
+          await user.delete();
+        }
+      } catch (_) {
+        // Ignorar errores secundarios
+      }
+    }
+  }
+
   // ============================================================================
   // RECUPERACIÓN DE CONTRASEÑA
   // ============================================================================

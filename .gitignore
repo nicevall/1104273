@@ -83,6 +83,7 @@ key.properties
 secret.dart
 credentials.json
 local.properties
+storage.rules
 
 # Heavy Files & Build Artifacts (Generated)
 node_modules/

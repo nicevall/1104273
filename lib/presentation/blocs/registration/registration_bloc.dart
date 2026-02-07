@@ -22,6 +22,7 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
   // Estado temporal del registro (se guarda localmente durante los pasos)
   String? _userId;
   String? _email;
+  String? _password; // Para re-autenticación al cancelar registro
   String? _firstName;
   String? _lastName;
   String? _phoneNumber;
@@ -68,8 +69,9 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
     emit(const RegistrationLoading(step: 1));
 
     try {
-      // Guardar datos localmente
+      // Guardar datos localmente (incluyendo contraseña para re-auth al cancelar)
       _email = event.email;
+      _password = event.password;
 
       // Crear usuario en Firebase Auth y enviar email de verificación
       final userId = await _authService.initiateRegistration(
@@ -98,6 +100,7 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
 
           _userId = user.uid;
           _email = event.email;
+          _password = event.password;
 
           // Verificar si ya validó el email para saltar al paso correcto
           if (user.emailVerified) {
@@ -305,14 +308,9 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
         imageFile: event.registrationPhoto,
       );
 
-      // 4. Completar registro con TODOS los datos extraídos por OCR
-      await _authService.completeRegistration(
-        firstName: _firstName!,
-        lastName: _lastName!,
-        phoneNumber: _phoneNumber!,
-        career: _career!,
-        semester: _semester!,
-        role: _role!,
+      // 4. Registrar vehículo con Cloud Function dedicada
+      // El usuario ya fue registrado en Step 5, solo falta el vehículo
+      await _authService.registerVehicle(
         vehicle: {
           // Datos del vehículo extraídos de matrícula
           'brand': event.brand,
@@ -341,10 +339,10 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
         },
       );
 
-      // Registro completado
+      // Registro de vehículo completado
       emit(RegistrationSuccess(
         userId: userId,
-        role: _role ?? 'conductor',
+        role: 'conductor',
         hasVehicle: true,
       ));
 
@@ -413,10 +411,19 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
     Emitter<RegistrationState> emit,
   ) async {
     try {
-      // Eliminar usuario si existe (registro incompleto)
-      await _authService.deleteCurrentUser();
+      // Re-autenticar y eliminar usuario
+      // Firebase requiere autenticación reciente para eliminar cuenta
+      if (_email != null && _password != null) {
+        await _authService.deleteCurrentUserWithReauth(
+          email: _email!,
+          password: _password!,
+        );
+      } else {
+        // Fallback: intentar eliminar sin re-auth (puede fallar si pasó mucho tiempo)
+        await _authService.deleteCurrentUser();
+      }
     } catch (e) {
-      // Ignorar errores
+      // Ignorar errores - el usuario puede quedar huérfano pero eso se limpia después
     }
 
     _resetTempData();
@@ -478,6 +485,7 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
   void _resetTempData() {
     _userId = null;
     _email = null;
+    _password = null; // Limpiar contraseña por seguridad
     _firstName = null;
     _lastName = null;
     _phoneNumber = null;

@@ -45,11 +45,8 @@ class RoleSwitcher extends StatelessWidget {
               icon: Icons.directions_car,
               label: 'Conductor',
               isActive: activeRole == 'conductor',
-              isEnabled: false, // Deshabilitado - Próximamente
-              onTap: () {
-                // Mostrar tooltip de próximamente
-                _showComingSoonTooltip(context);
-              },
+              isEnabled: true,
+              onTap: () => onRoleChanged('conductor'),
             ),
           ),
         ],

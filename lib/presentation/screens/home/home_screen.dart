@@ -3,24 +3,36 @@
 // Muestra búsqueda, historial reciente y destinos frecuentes
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../data/models/vehicle_model.dart';
+import '../../../data/services/firestore_service.dart';
+import '../../../data/services/trips_service.dart';
+import '../../blocs/trip/trip_bloc.dart';
+import '../../blocs/trip/trip_event.dart';
+import '../../blocs/trip/trip_state.dart';
 import '../../widgets/home/role_switcher.dart';
 import '../../widgets/home/search_bar_widget.dart';
 import '../../widgets/home/recent_place_card.dart';
 import '../../widgets/home/location_permission_banner.dart';
+import '../../widgets/driver/trip_type_options.dart';
+import '../../widgets/driver/vehicle_info_card.dart';
+import '../../widgets/driver/upcoming_trip_card.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
   final String userRole; // 'pasajero', 'conductor', 'ambos'
   final bool hasVehicle; // true si tiene vehículo registrado
+  final String? activeRole; // Rol activo inicial (para mantener contexto)
 
   const HomeScreen({
     super.key,
     required this.userId,
     required this.userRole,
     this.hasVehicle = false,
+    this.activeRole,
   });
 
   @override
@@ -41,8 +53,52 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    // Si es "ambos", inicia como pasajero por defecto
-    _activeRole = widget.userRole == 'ambos' ? 'pasajero' : widget.userRole;
+    // Si se proporcionó un activeRole, usarlo; sino, usar la lógica por defecto
+    if (widget.activeRole != null &&
+        (widget.activeRole == 'conductor' || widget.activeRole == 'pasajero')) {
+      // Verificar que el usuario puede usar ese rol
+      if (widget.activeRole == 'conductor' && widget.hasVehicle) {
+        _activeRole = 'conductor';
+      } else if (widget.activeRole == 'pasajero') {
+        _activeRole = 'pasajero';
+      } else {
+        // Fallback: Si es "ambos", inicia como pasajero por defecto
+        _activeRole = widget.userRole == 'ambos' ? 'pasajero' : widget.userRole;
+      }
+    } else {
+      // Si es "ambos", inicia como pasajero por defecto
+      _activeRole = widget.userRole == 'ambos' ? 'pasajero' : widget.userRole;
+    }
+
+    // Cargar viajes si inicia como conductor
+    if (_activeRole == 'conductor') {
+      _loadDriverTrips();
+    }
+  }
+
+  void _loadDriverTrips() {
+    context.read<TripBloc>().add(
+      LoadDriverTripsEvent(driverId: widget.userId),
+    );
+  }
+
+  /// Maneja el tap en "Viaje Instantáneo"
+  /// Verifica si ya existe uno activo y redirige apropiadamente
+  Future<void> _handleInstantTripTap() async {
+    // Verificar si ya hay un viaje instantáneo activo
+    final activeTrip = await TripsService().getActiveInstantTrip(widget.userId);
+
+    if (!mounted) return;
+
+    if (activeTrip != null) {
+      // Ya tiene un viaje activo, ir a la pantalla de viaje activo
+      context.push('/driver/active-trip/${activeTrip.tripId}');
+    } else {
+      // No tiene viaje activo, crear uno nuevo
+      context.push('/driver/instant-trip', extra: {
+        'userId': widget.userId,
+      });
+    }
   }
 
   void _onRoleChanged(String newRole) {
@@ -54,12 +110,16 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _activeRole = newRole;
     });
+    // Cargar viajes al cambiar a conductor
+    if (newRole == 'conductor') {
+      _loadDriverTrips();
+    }
   }
 
   void _showVehicleRequiredDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Row(
           children: [
             Icon(Icons.directions_car, color: AppColors.primary),
@@ -71,24 +131,59 @@ class _HomeScreenState extends State<HomeScreen> {
           'Para usar el modo conductor necesitas registrar tu vehículo primero.\n\n'
           '¿Deseas registrar tu vehículo ahora?',
         ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Más tarde'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              context.push('/vehicle/register', extra: {
-                'userId': widget.userId,
-                'role': widget.userRole,
-              });
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Registrar vehículo'),
+          Row(
+            children: [
+              // Botón Más tarde - outline gris
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: Text(
+                    'Más tarde',
+                    style: AppTextStyles.button.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Botón Registrar vehículo - turquesa sólido
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                    context.push('/vehicle/register', extra: {
+                      'userId': widget.userId,
+                      'role': widget.userRole,
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: Text(
+                    'Registrar',
+                    style: AppTextStyles.button.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -251,51 +346,249 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildDriverHome() {
-    // Pantalla de conductor - Próximamente
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Toggle de rol (solo si es "ambos")
-            if (widget.userRole == 'ambos')
-              Padding(
-                padding: const EdgeInsets.only(bottom: 40),
-                child: RoleSwitcher(
-                  activeRole: _activeRole,
-                  onRoleChanged: _onRoleChanged,
-                ),
-              ),
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header con logo y avatar
+          _buildHeader(),
 
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: AppColors.tertiary.withOpacity(0.5),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.directions_car,
-                size: 64,
-                color: AppColors.textSecondary,
+          const SizedBox(height: 16),
+
+          // Toggle de rol (solo si es "ambos")
+          if (widget.userRole == 'ambos')
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: RoleSwitcher(
+                activeRole: _activeRole,
+                onRoleChanged: _onRoleChanged,
               ),
             ),
-            const SizedBox(height: 24),
-            Text(
-              'Modo Conductor',
-              style: AppTextStyles.h2,
-              textAlign: TextAlign.center,
+
+          const SizedBox(height: 24),
+
+          // Opciones de tipo de viaje: Instantáneo y Planificado
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: TripTypeOptions(
+              onInstantTap: () => _handleInstantTripTap(),
+              onScheduledTap: () {
+                context.push('/driver/create-trip/form', extra: {
+                  'userId': widget.userId,
+                });
+              },
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          // Info del vehículo
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: FutureBuilder<VehicleModel?>(
+              future: FirestoreService().getUserVehicle(widget.userId),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const SizedBox.shrink();
+                }
+                if (snapshot.hasData && snapshot.data != null) {
+                  return VehicleInfoCard(vehicle: snapshot.data!);
+                }
+                return const SizedBox.shrink();
+              },
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Sección "Mis viajes programados"
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(
+              'Mis viajes',
+              style: AppTextStyles.h3,
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Lista de viajes (con auto-refresh tras cambios de estado)
+          BlocListener<TripBloc, TripState>(
+            listenWhen: (prev, curr) =>
+                curr is TripStarted ||
+                curr is TripCompleted ||
+                curr is TripCancelled ||
+                curr is TripCreated,
+            listener: (context, state) {
+              // Re-cargar viajes cuando cambia el estado de algún viaje
+              _loadDriverTrips();
+            },
+            child: BlocBuilder<TripBloc, TripState>(
+              buildWhen: (prev, curr) =>
+                  curr is TripLoading ||
+                  curr is DriverTripsLoaded ||
+                  curr is TripError ||
+                  curr is TripInitial,
+              builder: (context, state) {
+                if (state is TripLoading) {
+                  return const Padding(
+                    padding: EdgeInsets.all(40),
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  );
+                }
+
+                if (state is DriverTripsLoaded) {
+                  final trips = state.trips;
+
+                  if (trips.isEmpty) {
+                    return _buildEmptyTripsState();
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Column(
+                      children: [
+                        ListView.separated(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: trips.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 12),
+                          itemBuilder: (context, index) {
+                            final trip = trips[index];
+                            return UpcomingTripCard(
+                              trip: trip,
+                              onTap: () {
+                                // Viajes activos (instantáneos) van a pantalla de viaje activo
+                                // Viajes programados van al detalle normal
+                                if (trip.isActive) {
+                                  context.push(
+                                    '/driver/active-trip/${trip.tripId}',
+                                  );
+                                } else {
+                                  context.push(
+                                    '/driver/trip/${trip.tripId}',
+                                  );
+                                }
+                              },
+                            );
+                          },
+                        ),
+                        // TODO: Quitar este botón después del desarrollo
+                        const SizedBox(height: 16),
+                        TextButton.icon(
+                          onPressed: () async {
+                            final confirmed = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: const Text('Eliminar viajes'),
+                                content: Text(
+                                  '¿Eliminar los ${trips.length} viajes? Esta acción no se puede deshacer.',
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, false),
+                                    child: const Text('Cancelar'),
+                                  ),
+                                  ElevatedButton(
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: AppColors.error,
+                                    ),
+                                    child: const Text('Eliminar'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirmed == true) {
+                              final count = await TripsService()
+                                  .deleteAllDriverTrips(widget.userId);
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('$count viajes eliminados'),
+                                    backgroundColor: AppColors.success,
+                                  ),
+                                );
+                                _loadDriverTrips();
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.delete_sweep, size: 16),
+                          label: const Text('Eliminar todos'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppColors.error,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                if (state is TripError) {
+                  // Si el error es de índice o Firestore, mostrar empty state
+                  if (state.error.contains('index') ||
+                      state.error.contains('FAILED_PRECONDITION')) {
+                    return _buildEmptyTripsState();
+                  }
+                  return Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Center(
+                      child: Text(
+                        'No se pudieron cargar los viajes',
+                        style: AppTextStyles.body2.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  );
+                }
+
+                // Estado inicial - mostrar empty state
+                return _buildEmptyTripsState();
+              },
+            ),
+          ),
+
+          const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyTripsState() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: AppColors.tertiary.withOpacity(0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            Icon(
+              Icons.route_outlined,
+              color: AppColors.textSecondary,
+              size: 48,
             ),
             const SizedBox(height: 12),
             Text(
-              'Esta funcionalidad estará disponible próximamente.',
-              style: AppTextStyles.body2,
-              textAlign: TextAlign.center,
+              'No tienes viajes programados',
+              style: AppTextStyles.body1.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
             Text(
-              'Podrás crear viajes y recibir solicitudes de pasajeros.',
-              style: AppTextStyles.caption,
+              'Crea tu primer viaje y empieza a compartir gastos',
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textSecondary,
+              ),
               textAlign: TextAlign.center,
             ),
           ],

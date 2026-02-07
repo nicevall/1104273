@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_dimensions.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../blocs/auth/auth_bloc.dart';
+import '../../blocs/auth/auth_event.dart';
 import '../../blocs/registration/registration_bloc.dart';
 import '../../blocs/registration/registration_event.dart';
 import '../../blocs/registration/registration_state.dart';
@@ -42,12 +44,11 @@ class VehicleSummaryScreen extends StatelessWidget {
     return BlocConsumer<RegistrationBloc, RegistrationState>(
       listener: (context, state) {
         if (state is RegistrationSuccess) {
-          // Registro exitoso, navegar al home con datos del usuario
-          context.go('/home', extra: {
-            'userId': state.userId,
-            'userRole': state.role,
-            'hasVehicle': true,
-          });
+          // Registro exitoso, refrescar AuthBloc para que recargue el usuario
+          // con hasVehicle: true desde Firestore, luego navegar al splash
+          // que redirigirá correctamente al home
+          context.read<AuthBloc>().add(const CheckAuthStatusEvent());
+          context.go('/splash');
         } else if (state is RegistrationFailure) {
           // Mostrar mensaje de error
           ScaffoldMessenger.of(context).showSnackBar(

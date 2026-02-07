@@ -230,32 +230,43 @@ class _VehicleMatriculaScreenState extends State<VehicleMatriculaScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Progress indicator
-              _buildProgressIndicator(1, 4),
-              const SizedBox(height: AppDimensions.spacingL),
-
-              // Título
-              Text('Foto de la matrícula', style: AppTextStyles.h1),
-              const SizedBox(height: AppDimensions.spacingS),
-              Text(
-                'Toma una foto clara de la matrícula de tu vehículo',
-                style: AppTextStyles.body1.copyWith(color: AppColors.textSecondary),
-              ),
-              const SizedBox(height: AppDimensions.spacingL),
-
-              // Área de foto
+              // Contenido scrollable
               Expanded(
-                child: _buildPhotoArea(),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Progress indicator
+                      _buildProgressIndicator(1, 4),
+                      const SizedBox(height: AppDimensions.spacingL),
+
+                      // Título
+                      Text('Foto de la matrícula', style: AppTextStyles.h1),
+                      const SizedBox(height: AppDimensions.spacingS),
+                      Text(
+                        'Toma una foto clara de la matrícula de tu vehículo',
+                        style: AppTextStyles.body1.copyWith(color: AppColors.textSecondary),
+                      ),
+                      const SizedBox(height: AppDimensions.spacingL),
+
+                      // Área de foto
+                      AspectRatio(
+                        aspectRatio: 4 / 3,
+                        child: _buildPhotoArea(),
+                      ),
+                      const SizedBox(height: AppDimensions.spacingL),
+
+                      // Datos extraídos
+                      if (_isVerified && _vehicleData != null) ...[
+                        _buildExtractedDataCard(),
+                        const SizedBox(height: AppDimensions.spacingL),
+                      ],
+                    ],
+                  ),
+                ),
               ),
-              const SizedBox(height: AppDimensions.spacingL),
 
-              // Datos extraídos
-              if (_isVerified && _vehicleData != null) ...[
-                _buildExtractedDataCard(),
-                const SizedBox(height: AppDimensions.spacingL),
-              ],
-
-              // Botones
+              // Botones fijos abajo
               if (_photo == null)
                 CustomButton.primary(
                   text: 'Tomar foto',

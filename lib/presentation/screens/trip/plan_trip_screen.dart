@@ -11,6 +11,7 @@ import 'package:google_maps_webservice/places.dart' as gmaps;
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../data/services/google_places_service.dart';
+import '../../../data/services/location_cache_service.dart';
 
 class PlanTripScreen extends StatefulWidget {
   final String userId;
@@ -55,8 +56,8 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     super.initState();
     _placesService = GooglePlacesService();
 
-    // Detectar ubicación actual automáticamente
-    _detectCurrentLocation();
+    // Primero intentar usar ubicación cacheada, luego detectar si no hay
+    _initializeLocationFromCache();
 
     // Si hay destino preseleccionado
     if (widget.preselectedDestination != null) {
@@ -81,6 +82,26 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         _destinationFocus.requestFocus();
       }
     });
+  }
+
+  /// Intenta usar la ubicación cacheada primero para carga instantánea
+  void _initializeLocationFromCache() {
+    final cache = LocationCacheService();
+
+    // Si hay ubicación fresca en caché, usarla inmediatamente
+    if (cache.hasFreshLocation) {
+      final cached = cache.cachedLocation!;
+      setState(() {
+        _originLatitude = cached.latitude;
+        _originLongitude = cached.longitude;
+        _originController.text = cached.shortName ?? 'Mi ubicación';
+        _originAddress = cached.fullAddress;
+        _isLoadingLocation = false;
+      });
+    } else {
+      // Si no hay caché o está desactualizada, detectar ubicación normalmente
+      _detectCurrentLocation();
+    }
   }
 
   void _onDestinationChanged() {
@@ -180,6 +201,14 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         );
 
         if (geocodeResult != null && mounted) {
+          // Actualizar el caché con la nueva ubicación
+          LocationCacheService().updateLocation(
+            latitude: position.latitude,
+            longitude: position.longitude,
+            shortName: geocodeResult.shortName,
+            fullAddress: geocodeResult.fullAddress,
+          );
+
           setState(() {
             _originController.text = geocodeResult.shortName;
             _originAddress = geocodeResult.fullAddress;

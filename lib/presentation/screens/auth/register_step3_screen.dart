@@ -38,6 +38,16 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
   String? _selectedCareer;
   int? _selectedSemester;
 
+  // Estados "touched" para mostrar errores solo después de interacción
+  bool _firstNameTouched = false;
+  bool _lastNameTouched = false;
+  bool _phoneTouched = false;
+
+  // FocusNodes para detectar cuando pierde el foco
+  final _firstNameFocusNode = FocusNode();
+  final _lastNameFocusNode = FocusNode();
+  final _phoneFocusNode = FocusNode();
+
   @override
   void initState() {
     super.initState();
@@ -58,10 +68,107 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
     _firstNameController.addListener(_onFieldChanged);
     _lastNameController.addListener(_onFieldChanged);
     _phoneController.addListener(_onFieldChanged);
+
+    // Detectar cuando pierde el foco para marcar como "touched"
+    _firstNameFocusNode.addListener(_onFirstNameFocusChange);
+    _lastNameFocusNode.addListener(_onLastNameFocusChange);
+    _phoneFocusNode.addListener(_onPhoneFocusChange);
   }
 
   void _onFieldChanged() {
-    setState(() {});
+    setState(() {
+      // Marcar como "touched" si tienen contenido
+      if (_firstNameController.text.isNotEmpty) {
+        _firstNameTouched = true;
+      }
+      if (_lastNameController.text.isNotEmpty) {
+        _lastNameTouched = true;
+      }
+      if (_phoneController.text.isNotEmpty) {
+        _phoneTouched = true;
+      }
+    });
+  }
+
+  // Cuando el nombre pierde el foco, marcar como touched
+  void _onFirstNameFocusChange() {
+    if (!_firstNameFocusNode.hasFocus) {
+      setState(() {
+        _firstNameTouched = true;
+      });
+    }
+  }
+
+  // Cuando el apellido pierde el foco, marcar como touched
+  void _onLastNameFocusChange() {
+    if (!_lastNameFocusNode.hasFocus) {
+      setState(() {
+        _lastNameTouched = true;
+      });
+    }
+  }
+
+  // Cuando el celular pierde el foco, marcar como touched
+  void _onPhoneFocusChange() {
+    if (!_phoneFocusNode.hasFocus) {
+      setState(() {
+        _phoneTouched = true;
+      });
+    }
+  }
+
+  // Verificar si el nombre tiene error
+  bool get _firstNameHasError {
+    if (!_firstNameTouched) return false;
+    final name = _firstNameController.text.trim();
+    if (name.isEmpty) return true;
+    return name.length < 3;
+  }
+
+  // Obtener mensaje de error del nombre
+  String? get _firstNameErrorMessage {
+    if (!_firstNameTouched) return null;
+    final name = _firstNameController.text.trim();
+    if (name.isEmpty) return 'El nombre es requerido';
+    if (name.length < 3) return 'Mínimo 3 caracteres';
+    return null;
+  }
+
+  // Verificar si el apellido tiene error
+  bool get _lastNameHasError {
+    if (!_lastNameTouched) return false;
+    final lastName = _lastNameController.text.trim();
+    if (lastName.isEmpty) return true;
+    return lastName.length < 3;
+  }
+
+  // Obtener mensaje de error del apellido
+  String? get _lastNameErrorMessage {
+    if (!_lastNameTouched) return null;
+    final lastName = _lastNameController.text.trim();
+    if (lastName.isEmpty) return 'El apellido es requerido';
+    if (lastName.length < 3) return 'Mínimo 3 caracteres';
+    return null;
+  }
+
+  // Verificar si el celular tiene error
+  bool get _phoneHasError {
+    if (!_phoneTouched) return false;
+    final phone = _phoneController.text.trim();
+    if (phone.isEmpty) return true;
+    if (phone.length != 9) return true;
+    if (!phone.startsWith('9')) return true;
+    return false;
+  }
+
+  // Obtener mensaje de error del celular
+  String? get _phoneErrorMessage {
+    if (!_phoneTouched) return null;
+    final phone = _phoneController.text.trim();
+    if (phone.isEmpty) return 'El número es requerido';
+    if (phone.length != 9) return 'Debe tener 9 dígitos';
+    if (!phone.startsWith('9')) return 'Debe empezar con 9';
+    return null;
   }
 
   /// Verificar si todos los requisitos del formulario están cumplidos
@@ -109,9 +216,15 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
     _firstNameController.removeListener(_onFieldChanged);
     _lastNameController.removeListener(_onFieldChanged);
     _phoneController.removeListener(_onFieldChanged);
+    _firstNameFocusNode.removeListener(_onFirstNameFocusChange);
+    _lastNameFocusNode.removeListener(_onLastNameFocusChange);
+    _phoneFocusNode.removeListener(_onPhoneFocusChange);
     _firstNameController.dispose();
     _lastNameController.dispose();
     _phoneController.dispose();
+    _firstNameFocusNode.dispose();
+    _lastNameFocusNode.dispose();
+    _phoneFocusNode.dispose();
     super.dispose();
   }
 
@@ -158,16 +271,129 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
   void _showCannotGoBackDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('No puedes volver'),
         content: const Text(
           'Tu correo ya fue verificado. Debes completar el registro para continuar.\n\n'
-          'Si deseas cancelar, puedes hacerlo desde el último paso del registro.',
+          'Si deseas cancelar el registro, tu cuenta será eliminada.',
         ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Entendido'),
+          Row(
+            children: [
+              // Botón Entendido - outline gris
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: Text(
+                    'Entendido',
+                    style: AppTextStyles.button.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Botón Cancelar registro - rojo sólido
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                    _handleCancelRegistration();
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: Text(
+                    'Cancelar',
+                    style: AppTextStyles.button.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Cancelar registro - mostrar confirmación
+  void _handleCancelRegistration() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('¿Cancelar registro?'),
+        content: const Text(
+          '¿Estás seguro que deseas cancelar el registro? Tu cuenta será eliminada.',
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              // Botón No - outline gris
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: Text(
+                    'No',
+                    style: AppTextStyles.button.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Botón Sí, cancelar - rojo sólido
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                    // Cancelar registro y eliminar cuenta
+                    context.read<RegistrationBloc>().add(const CancelRegistrationEvent());
+                    context.go('/welcome');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: Text(
+                    'Sí, cancelar',
+                    style: AppTextStyles.button.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -251,25 +477,81 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
                     const SizedBox(height: AppDimensions.spacingXL),
 
                     // Nombre
-                    CustomTextField(
-                      label: 'Nombre',
-                      hint: 'Tu primer nombre',
-                      controller: _firstNameController,
-                      textCapitalization: TextCapitalization.words,
-                      prefixIcon: Icons.person_outline,
-                      validator: Validators.validateName,
+                    Focus(
+                      focusNode: _firstNameFocusNode,
+                      child: CustomTextField(
+                        label: 'Nombre',
+                        hint: 'Tu primer nombre',
+                        controller: _firstNameController,
+                        textCapitalization: TextCapitalization.words,
+                        prefixIcon: Icons.person_outline,
+                        hasExternalError: _firstNameHasError,
+                        validator: Validators.validateName,
+                      ),
                     ),
+                    // Feedback del nombre
+                    if (_firstNameTouched && _firstNameHasError)
+                      Padding(
+                        padding: const EdgeInsets.only(
+                          left: AppDimensions.paddingL,
+                          top: 6,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.cancel,
+                              size: 14,
+                              color: AppColors.error,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              _firstNameErrorMessage ?? '',
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.error,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     const SizedBox(height: AppDimensions.spacingM),
 
                     // Apellido
-                    CustomTextField(
-                      label: 'Apellido',
-                      hint: 'Tu apellido',
-                      controller: _lastNameController,
-                      textCapitalization: TextCapitalization.words,
-                      prefixIcon: Icons.person_outline,
-                      validator: Validators.validateName,
+                    Focus(
+                      focusNode: _lastNameFocusNode,
+                      child: CustomTextField(
+                        label: 'Apellido',
+                        hint: 'Tu apellido',
+                        controller: _lastNameController,
+                        textCapitalization: TextCapitalization.words,
+                        prefixIcon: Icons.person_outline,
+                        hasExternalError: _lastNameHasError,
+                        validator: Validators.validateName,
+                      ),
                     ),
+                    // Feedback del apellido
+                    if (_lastNameTouched && _lastNameHasError)
+                      Padding(
+                        padding: const EdgeInsets.only(
+                          left: AppDimensions.paddingL,
+                          top: 6,
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.cancel,
+                              size: 14,
+                              color: AppColors.error,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              _lastNameErrorMessage ?? '',
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.error,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     const SizedBox(height: AppDimensions.spacingM),
 
                     // Celular
@@ -337,12 +619,48 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
     required void Function(String?)? onChanged,
     bool enabled = true,
   }) {
+    final isSelected = value != null;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: AppTextStyles.inputLabel,
+        // Label con indicador de "Toca para seleccionar"
+        Row(
+          children: [
+            Text(
+              label,
+              style: AppTextStyles.inputLabel,
+            ),
+            if (enabled && !isSelected) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.touch_app,
+                      size: 12,
+                      color: AppColors.primary,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Toca para seleccionar',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
         ),
         const SizedBox(height: 8),
         GestureDetector(
@@ -358,18 +676,28 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
             height: 56,
             padding: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
-              color: enabled ? Colors.white : AppColors.background,
+              // Fondo ligeramente turquesa cuando está enabled y no seleccionado
+              color: !enabled
+                  ? AppColors.background
+                  : (isSelected
+                      ? Colors.white
+                      : AppColors.primary.withOpacity(0.05)),
               borderRadius: BorderRadius.circular(AppDimensions.borderRadius),
               border: Border.all(
-                color: AppColors.border,
-                width: 1,
+                // Borde turquesa cuando está enabled y no seleccionado
+                color: !enabled
+                    ? AppColors.border
+                    : (isSelected ? AppColors.border : AppColors.primary.withOpacity(0.5)),
+                width: enabled && !isSelected ? 1.5 : 1,
               ),
             ),
             child: Row(
               children: [
                 Icon(
                   icon,
-                  color: enabled ? AppColors.textSecondary : AppColors.disabled,
+                  color: enabled
+                      ? (isSelected ? AppColors.textSecondary : AppColors.primary)
+                      : AppColors.disabled,
                   size: 22,
                 ),
                 const SizedBox(width: 12),
@@ -377,16 +705,23 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
                   child: Text(
                     value ?? hint,
                     style: AppTextStyles.body1.copyWith(
-                      color: value != null
+                      color: isSelected
                           ? AppColors.textPrimary
-                          : AppColors.textSecondary,
+                          : (enabled
+                              ? AppColors.primary
+                              : AppColors.textSecondary),
+                      fontWeight: enabled && !isSelected
+                          ? FontWeight.w500
+                          : FontWeight.normal,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 Icon(
                   Icons.keyboard_arrow_down_rounded,
-                  color: enabled ? AppColors.textSecondary : AppColors.disabled,
+                  color: enabled
+                      ? (isSelected ? AppColors.textSecondary : AppColors.primary)
+                      : AppColors.disabled,
                 ),
               ],
             ),
@@ -515,135 +850,191 @@ class _RegisterStep3ScreenState extends State<RegisterStep3Screen> {
 
   /// Construir campo de celular con prefijo +593
   Widget _buildPhoneField() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Celular',
-          style: AppTextStyles.inputLabel,
-        ),
-        const SizedBox(height: 8),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Prefijo fijo +593
-            Container(
-              height: 56,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(AppDimensions.borderRadius),
-                  bottomLeft: Radius.circular(AppDimensions.borderRadius),
+    final hasError = _phoneHasError;
+
+    return Focus(
+      focusNode: _phoneFocusNode,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Celular',
+            style: AppTextStyles.inputLabel.copyWith(
+              color: hasError ? AppColors.error : AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Prefijo fijo +593
+              Container(
+                height: 56,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                decoration: BoxDecoration(
+                  color: hasError
+                      ? AppColors.error.withOpacity(0.05)
+                      : AppColors.background,
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(AppDimensions.borderRadius),
+                    bottomLeft: Radius.circular(AppDimensions.borderRadius),
+                  ),
+                  border: Border.all(
+                    color: hasError ? AppColors.error : AppColors.border,
+                    width: hasError ? 1.5 : 1,
+                  ),
                 ),
-                border: Border.all(
-                  color: AppColors.border,
-                  width: 1,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.phone_outlined,
+                      color: hasError ? AppColors.error : AppColors.textSecondary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '+593',
+                      style: AppTextStyles.body1.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              // Campo de número (9 dígitos)
+              Expanded(
+                child: TextFormField(
+                  controller: _phoneController,
+                  keyboardType: TextInputType.number,
+                  maxLength: 9,
+                  style: AppTextStyles.body1,
+                  decoration: InputDecoration(
+                    hintText: '999999999',
+                    hintStyle: AppTextStyles.body1.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                    filled: hasError,
+                    fillColor: hasError
+                        ? AppColors.error.withOpacity(0.05)
+                        : Colors.white,
+                    counterText: '', // Ocultar contador de caracteres
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 16,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(AppDimensions.borderRadius),
+                        bottomRight: Radius.circular(AppDimensions.borderRadius),
+                      ),
+                      borderSide: BorderSide(
+                        color: hasError ? AppColors.error : AppColors.border,
+                        width: hasError ? 1.5 : 1,
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(AppDimensions.borderRadius),
+                        bottomRight: Radius.circular(AppDimensions.borderRadius),
+                      ),
+                      borderSide: BorderSide(
+                        color: hasError ? AppColors.error : AppColors.primary,
+                        width: 2,
+                      ),
+                    ),
+                    errorBorder: OutlineInputBorder(
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(AppDimensions.borderRadius),
+                        bottomRight: Radius.circular(AppDimensions.borderRadius),
+                      ),
+                      borderSide: const BorderSide(
+                        color: AppColors.error,
+                        width: 1.5,
+                      ),
+                    ),
+                    focusedErrorBorder: OutlineInputBorder(
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(AppDimensions.borderRadius),
+                        bottomRight: Radius.circular(AppDimensions.borderRadius),
+                      ),
+                      borderSide: const BorderSide(
+                        color: AppColors.error,
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(9),
+                    // Solo permite 9 como primer dígito
+                    _OnlyNineFirstDigitFormatter(),
+                  ],
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Ingresa tu número';
+                    }
+                    if (value.length != 9) {
+                      return 'El número debe tener 9 dígitos';
+                    }
+                    if (!value.startsWith('9')) {
+                      return 'El número debe empezar con 9';
+                    }
+                    return null;
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Feedback del celular
+          if (_phoneTouched && hasError)
+            Padding(
+              padding: const EdgeInsets.only(left: AppDimensions.paddingL),
               child: Row(
                 children: [
                   const Icon(
-                    Icons.phone_outlined,
-                    color: AppColors.textSecondary,
-                    size: 20,
+                    Icons.cancel,
+                    size: 14,
+                    color: AppColors.error,
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   Text(
-                    '+593',
-                    style: AppTextStyles.body1.copyWith(
-                      fontWeight: FontWeight.w500,
+                    _phoneErrorMessage ?? '',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.error,
                     ),
                   ),
                 ],
               ),
             ),
-            // Campo de número (9 dígitos)
-            Expanded(
-              child: TextFormField(
-                controller: _phoneController,
-                keyboardType: TextInputType.number,
-                maxLength: 9,
-                style: AppTextStyles.body1,
-                decoration: InputDecoration(
-                  hintText: '999999999',
-                  hintStyle: AppTextStyles.body1.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                  counterText: '', // Ocultar contador de caracteres
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 16,
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: const BorderRadius.only(
-                      topRight: Radius.circular(AppDimensions.borderRadius),
-                      bottomRight: Radius.circular(AppDimensions.borderRadius),
-                    ),
-                    borderSide: const BorderSide(
-                      color: AppColors.border,
-                      width: 1,
-                    ),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: const BorderRadius.only(
-                      topRight: Radius.circular(AppDimensions.borderRadius),
-                      bottomRight: Radius.circular(AppDimensions.borderRadius),
-                    ),
-                    borderSide: const BorderSide(
-                      color: AppColors.primary,
-                      width: 2,
-                    ),
-                  ),
-                  errorBorder: OutlineInputBorder(
-                    borderRadius: const BorderRadius.only(
-                      topRight: Radius.circular(AppDimensions.borderRadius),
-                      bottomRight: Radius.circular(AppDimensions.borderRadius),
-                    ),
-                    borderSide: const BorderSide(
-                      color: AppColors.error,
-                      width: 1,
-                    ),
-                  ),
-                  focusedErrorBorder: OutlineInputBorder(
-                    borderRadius: const BorderRadius.only(
-                      topRight: Radius.circular(AppDimensions.borderRadius),
-                      bottomRight: Radius.circular(AppDimensions.borderRadius),
-                    ),
-                    borderSide: const BorderSide(
-                      color: AppColors.error,
-                      width: 2,
-                    ),
-                  ),
-                ),
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(9),
-                ],
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Ingresa tu número';
-                  }
-                  if (value.length != 9) {
-                    return 'El número debe tener 9 dígitos';
-                  }
-                  if (!value.startsWith('9')) {
-                    return 'El número debe empezar con 9';
-                  }
-                  return null;
-                },
+          if (!hasError || !_phoneTouched)
+            Text(
+              'El número debe empezar con 9 (ej: 999999999)',
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textSecondary,
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          'Ingresa tu número sin el 0 del principio',
-          style: AppTextStyles.caption.copyWith(
-            color: AppColors.textSecondary,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
+  }
+}
+
+/// Formatter que SOLO permite 9 como primer dígito
+class _OnlyNineFirstDigitFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    // Si el nuevo valor está vacío, permitirlo
+    if (newValue.text.isEmpty) {
+      return newValue;
+    }
+    // Si el primer dígito no es 9, rechazarlo
+    if (!newValue.text.startsWith('9')) {
+      return oldValue;
+    }
+    return newValue;
   }
 }

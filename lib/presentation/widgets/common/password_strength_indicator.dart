@@ -201,15 +201,15 @@ class PasswordStrengthIndicator extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-            isMet ? Icons.check_circle : Icons.circle_outlined,
+            isMet ? Icons.check_circle : Icons.cancel,
             size: 14,
-            color: isMet ? AppColors.success : AppColors.textSecondary,
+            color: isMet ? AppColors.success : AppColors.error,
           ),
           const SizedBox(width: 6),
           Text(
             text,
             style: AppTextStyles.caption.copyWith(
-              color: isMet ? AppColors.success : AppColors.textSecondary,
+              color: isMet ? AppColors.success : AppColors.error,
             ),
           ),
         ],

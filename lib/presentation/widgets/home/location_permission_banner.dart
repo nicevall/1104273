@@ -29,6 +29,9 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
   bool _isChecking = true;
   bool _wasGrantedBefore = false;
 
+  // Tipo de problema: 'permission' o 'service'
+  String _issueType = 'permission';
+
   @override
   void initState() {
     super.initState();
@@ -57,22 +60,32 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
   /// Verifica tanto el permiso como si el servicio de ubicación está activo
   Future<void> _checkLocationStatus() async {
     try {
+      // Verificar el permiso de ubicación primero
+      final permissionStatus = await Permission.location.status;
+
       // Verificar si el servicio de ubicación está habilitado
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
 
-      // Verificar el permiso de ubicación
-      final permissionStatus = await Permission.location.status;
+      // Determinar el tipo de problema
+      String issueType = 'permission';
+      bool shouldShowBanner = false;
 
-      // El banner debe mostrarse si:
-      // 1. El servicio de ubicación está desactivado, O
-      // 2. El permiso no está concedido
-      final shouldShowBanner = !serviceEnabled || !permissionStatus.isGranted;
+      if (!permissionStatus.isGranted) {
+        // Falta el permiso
+        issueType = 'permission';
+        shouldShowBanner = true;
+      } else if (!serviceEnabled) {
+        // Tiene permiso pero la ubicación del dispositivo está desactivada
+        issueType = 'service';
+        shouldShowBanner = true;
+      }
 
       if (mounted) {
         final wasVisibleBefore = _isVisible;
 
         setState(() {
           _isVisible = shouldShowBanner;
+          _issueType = issueType;
           _isChecking = false;
         });
 
@@ -96,6 +109,7 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
       if (mounted) {
         setState(() {
           _isVisible = true;
+          _issueType = 'permission';
           _isChecking = false;
         });
       }
@@ -137,6 +151,33 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
     }
   }
 
+  // Obtener el título según el tipo de problema
+  String get _title {
+    if (_issueType == 'service') {
+      return 'GPS desactivado';
+    } else {
+      return 'Permiso de ubicación';
+    }
+  }
+
+  // Obtener la descripción según el tipo de problema
+  String get _description {
+    if (_issueType == 'service') {
+      return 'Activa el GPS de tu dispositivo';
+    } else {
+      return 'Toca para otorgar permiso';
+    }
+  }
+
+  // Obtener el icono según el tipo de problema
+  IconData get _icon {
+    if (_issueType == 'service') {
+      return Icons.gps_off;
+    } else {
+      return Icons.location_disabled;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isChecking || !_isVisible) {
@@ -166,7 +207,7 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
                 shape: BoxShape.circle,
               ),
               child: Icon(
-                Icons.location_off,
+                _icon,
                 size: 18,
                 color: AppColors.warning,
               ),
@@ -177,7 +218,7 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Ubicación desactivada',
+                    _title,
                     style: AppTextStyles.body2.copyWith(
                       fontWeight: FontWeight.w600,
                       color: AppColors.textPrimary,
@@ -185,7 +226,7 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    'Toca aquí para activar',
+                    _description,
                     style: AppTextStyles.caption.copyWith(
                       color: AppColors.warning,
                     ),

@@ -115,7 +115,7 @@ class FirestoreService {
         return null;
       }
 
-      return VehicleModel.fromJson(querySnapshot.docs.first.data());
+      return VehicleModel.fromFirestore(querySnapshot.docs.first);
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
     } catch (e) {

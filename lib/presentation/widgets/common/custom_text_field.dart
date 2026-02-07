@@ -22,6 +22,7 @@ class CustomTextField extends StatefulWidget {
   final Function(String)? onChanged;
   final TextCapitalization textCapitalization;
   final bool readOnly;
+  final bool hasExternalError; // Para mostrar borde rojo desde fuera
 
   const CustomTextField({
     super.key,
@@ -41,6 +42,7 @@ class CustomTextField extends StatefulWidget {
     this.onChanged,
     this.textCapitalization = TextCapitalization.none,
     this.readOnly = false,
+    this.hasExternalError = false,
   });
 
   @override
@@ -77,6 +79,8 @@ class _CustomTextFieldState extends State<CustomTextField> {
 
   @override
   Widget build(BuildContext context) {
+    final hasError = _errorText != null || widget.hasExternalError;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -84,7 +88,7 @@ class _CustomTextFieldState extends State<CustomTextField> {
         Text(
           widget.label,
           style: AppTextStyles.label.copyWith(
-            color: AppColors.textPrimary,
+            color: hasError ? AppColors.error : AppColors.textPrimary,
           ),
         ),
         const SizedBox(height: AppDimensions.spacingXS),
@@ -112,37 +116,39 @@ class _CustomTextFieldState extends State<CustomTextField> {
             prefixIcon: widget.prefixIcon != null
                 ? Icon(
                     widget.prefixIcon,
-                    color: _errorText != null
+                    color: hasError
                         ? AppColors.error
                         : AppColors.textSecondary,
                   )
                 : null,
             suffixIcon: _buildSuffixIcon(),
             filled: true,
-            fillColor: widget.enabled ? Colors.white : AppColors.background,
+            fillColor: hasError
+                ? AppColors.error.withOpacity(0.05)
+                : (widget.enabled ? Colors.white : AppColors.background),
             contentPadding: const EdgeInsets.symmetric(
               horizontal: AppDimensions.paddingM,
               vertical: AppDimensions.paddingM,
             ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(AppDimensions.borderRadius),
-              borderSide: const BorderSide(
-                color: AppColors.border,
-                width: 1,
+              borderSide: BorderSide(
+                color: hasError ? AppColors.error : AppColors.border,
+                width: hasError ? 1.5 : 1,
               ),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(AppDimensions.borderRadius),
-              borderSide: const BorderSide(
-                color: AppColors.border,
-                width: 1,
+              borderSide: BorderSide(
+                color: hasError ? AppColors.error : AppColors.border,
+                width: hasError ? 1.5 : 1,
               ),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(AppDimensions.borderRadius),
-              borderSide: const BorderSide(
-                color: AppColors.primary,
-                width: 1.5,
+              borderSide: BorderSide(
+                color: hasError ? AppColors.error : AppColors.primary,
+                width: 2,
               ),
             ),
             errorBorder: OutlineInputBorder(
@@ -156,7 +162,7 @@ class _CustomTextFieldState extends State<CustomTextField> {
               borderRadius: BorderRadius.circular(AppDimensions.borderRadius),
               borderSide: const BorderSide(
                 color: AppColors.error,
-                width: 1.5,
+                width: 2,
               ),
             ),
             disabledBorder: OutlineInputBorder(

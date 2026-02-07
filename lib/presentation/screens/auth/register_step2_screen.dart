@@ -8,8 +8,6 @@ import '../../../core/constants/app_text_styles.dart';
 import '../../blocs/registration/registration_bloc.dart';
 import '../../blocs/registration/registration_event.dart';
 import '../../blocs/registration/registration_state.dart';
-import '../../widgets/common/custom_button.dart';
-import '../../widgets/common/progress_bar.dart';
 
 /// Step 2: Verificación de email por link
 /// Usuario hace clic en el link enviado a su correo
@@ -30,15 +28,18 @@ class RegisterStep2Screen extends StatefulWidget {
 
 class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
   Timer? _pollingTimer;
-  bool _isChecking = false;
   bool _canResend = true;
   int _resendCooldown = 0;
   Timer? _cooldownTimer;
+  bool _isCancelling = false;
 
   @override
   void initState() {
     super.initState();
     _startPolling();
+    // Iniciar cooldown automáticamente al cargar la pantalla
+    // ya que el email ya fue enviado en Step 1
+    _startCooldown();
   }
 
   @override
@@ -51,42 +52,15 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
   /// Iniciar polling cada 3 segundos
   void _startPolling() {
     _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (!_isChecking) {
-        context.read<RegistrationBloc>().add(const CheckEmailVerifiedEvent());
-      }
+      context.read<RegistrationBloc>().add(const CheckEmailVerifiedEvent());
     });
   }
 
-  /// Verificar manualmente
-  void _handleCheckVerification() {
-    if (_isChecking) return;
-
-    setState(() {
-      _isChecking = true;
-    });
-
-    context.read<RegistrationBloc>().add(const CheckEmailVerifiedEvent());
-
-    // Resetear estado después de un momento
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) {
-        setState(() {
-          _isChecking = false;
-        });
-      }
-    });
-  }
-
-  /// Reenviar email de verificación
-  void _handleResendEmail() {
-    if (!_canResend) return;
-
-    context.read<RegistrationBloc>().add(const ResendVerificationEmailEvent());
-
-    // Iniciar cooldown de 60 segundos
+  /// Iniciar cooldown de reenvío
+  void _startCooldown() {
     setState(() {
       _canResend = false;
-      _resendCooldown = 60;
+      _resendCooldown = 30; // 30 segundos iniciales (el email tarda en llegar)
     });
 
     _cooldownTimer?.cancel();
@@ -104,20 +78,48 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
     });
   }
 
+  /// Reenviar email de verificación
+  void _handleResendEmail() {
+    if (!_canResend) return;
+
+    context.read<RegistrationBloc>().add(const ResendVerificationEmailEvent());
+
+    // Iniciar cooldown de 60 segundos
+    _startCooldown();
+  }
+
   /// Mostrar diálogo de que no puede volver
   void _showCannotGoBackDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('No puedes volver'),
         content: const Text(
           'Tu correo y contraseña ya fueron registrados. Debes verificar tu correo para continuar.\n\n'
           'Si deseas cancelar el registro, usa el botón "Cancelar registro" más abajo.',
         ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Entendido'),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                elevation: 0,
+              ),
+              child: Text(
+                'Entendido',
+                style: AppTextStyles.button.copyWith(color: Colors.white),
+              ),
+            ),
           ),
         ],
       ),
@@ -128,26 +130,73 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
   void _handleCancelRegistration() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('¿Cancelar registro?'),
         content: const Text(
           '¿Estás seguro que deseas cancelar el registro? Tu cuenta será eliminada.',
         ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('No'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              context.read<RegistrationBloc>().add(const CancelRegistrationEvent());
-              context.go('/welcome');
-            },
-            child: const Text(
-              'Sí, cancelar',
-              style: TextStyle(color: AppColors.error),
-            ),
+          Row(
+            children: [
+              // Botón No - outline gris
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: Text(
+                    'No',
+                    style: AppTextStyles.button.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Botón Sí, cancelar - rojo sólido
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () async {
+                    Navigator.pop(dialogContext);
+                    setState(() {
+                      _isCancelling = true;
+                    });
+                    // Cancelar timers
+                    _pollingTimer?.cancel();
+                    _cooldownTimer?.cancel();
+                    // Enviar evento y esperar un momento para que se procese
+                    context.read<RegistrationBloc>().add(const CancelRegistrationEvent());
+                    // Esperar a que se elimine el usuario
+                    await Future.delayed(const Duration(milliseconds: 500));
+                    if (mounted) {
+                      context.go('/welcome');
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: Text(
+                    'Sí, cancelar',
+                    style: AppTextStyles.button.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -168,13 +217,14 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
         appBar: AppBar(
           backgroundColor: Colors.transparent,
           elevation: 0,
-          // Sin botón de retroceso - el usuario debe verificar su email
+          automaticallyImplyLeading: false, // Sin flecha de retroceso
           title: Text(
             'Verificación',
             style: AppTextStyles.h3.copyWith(
               color: AppColors.textPrimary,
             ),
           ),
+          centerTitle: true,
         ),
         body: BlocConsumer<RegistrationBloc, RegistrationState>(
         listener: (context, state) {
@@ -201,15 +251,24 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
           }
         },
         builder: (context, state) {
+          if (_isCancelling) {
+            return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: AppColors.primary),
+                  SizedBox(height: 16),
+                  Text('Cancelando registro...'),
+                ],
+              ),
+            );
+          }
+
           return SingleChildScrollView(
             padding: const EdgeInsets.all(AppDimensions.paddingL),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                // Barra de progreso
-                const ProgressBar(currentStep: 2),
-                const SizedBox(height: AppDimensions.spacingXL),
-
                 // Icono de email
                 Container(
                   width: 100,
@@ -266,7 +325,38 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: AppDimensions.spacingXL),
+                const SizedBox(height: AppDimensions.spacingS),
+
+                // Nota sobre spam (más visible con icono y color)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.info_outline,
+                        size: 16,
+                        color: AppColors.warning,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Revisa también tu carpeta de spam',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.warning,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: AppDimensions.spacingL),
 
                 // Instrucciones
                 Container(
@@ -290,12 +380,12 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
                       const SizedBox(height: 16),
                       _buildInstructionItem(
                         icon: Icons.check_circle_outline,
-                        text: 'Vuelve aquí y presiona el botón',
+                        text: 'Vuelve aquí, te detectamos automáticamente',
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: AppDimensions.spacingL),
+                const SizedBox(height: AppDimensions.spacingM),
 
                 // Indicador de polling
                 Container(
@@ -330,15 +420,7 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: AppDimensions.spacingXL),
-
-                // Botón verificar manualmente
-                CustomButton.primary(
-                  text: 'Ya verifiqué mi correo',
-                  onPressed: _isChecking ? null : _handleCheckVerification,
-                  isLoading: _isChecking,
-                ),
-                const SizedBox(height: AppDimensions.spacingM),
+                const SizedBox(height: AppDimensions.spacingL),
 
                 // Botón reenviar
                 TextButton.icon(
@@ -361,48 +443,29 @@ class _RegisterStep2ScreenState extends State<RegisterStep2Screen> {
 
                 const SizedBox(height: AppDimensions.spacingL),
 
-                // Nota de ayuda
-                Container(
-                  padding: const EdgeInsets.all(AppDimensions.paddingM),
-                  decoration: BoxDecoration(
-                    color: AppColors.warning.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: AppColors.warning.withOpacity(0.3),
+                // Botón cancelar registro - Rojo sólido con letras blancas
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _handleCancelRegistration,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.error,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: Text(
+                      'Cancelar registro',
+                      style: AppTextStyles.button.copyWith(
+                        color: Colors.white,
+                      ),
                     ),
                   ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.info_outline,
-                        color: AppColors.warning,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Revisa también tu carpeta de spam si no encuentras el correo.',
-                          style: AppTextStyles.caption.copyWith(
-                            color: AppColors.warning,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
                 ),
-                const SizedBox(height: AppDimensions.spacingXL),
 
-                // Botón cancelar registro
-                TextButton(
-                  onPressed: _handleCancelRegistration,
-                  child: Text(
-                    'Cancelar registro',
-                    style: AppTextStyles.body2.copyWith(
-                      color: AppColors.error,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ),
+                const SizedBox(height: AppDimensions.spacingL),
               ],
             ),
           );

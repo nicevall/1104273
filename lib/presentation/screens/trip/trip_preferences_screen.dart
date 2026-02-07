@@ -1,7 +1,7 @@
 // lib/presentation/screens/trip/trip_preferences_screen.dart
 // Pantalla "Detalles de Recogida" - Estilo Uber
 // Permite configurar qué lleva el pasajero (mochila, objeto grande, mascota)
-// Ahora con selección múltiple
+// Rediseñado: selector de mascota con perro(+tamaño)/gato/otro
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -25,13 +25,17 @@ class TripPreferencesScreen extends StatefulWidget {
 }
 
 class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
-  // Selección múltiple de opciones
+  // Selección múltiple de opciones principales
   bool _hasMochila = true; // Por defecto seleccionada
   bool _hasObjetoGrande = false;
   bool _hasMascota = false;
 
+  // Tipo de mascota
+  String? _petType; // 'perro', 'gato', 'otro'
+  String? _petSize; // 'grande', 'mediano', 'pequeño' (solo para perros)
+
   final TextEditingController _descriptionController = TextEditingController();
-  final TextEditingController _petController = TextEditingController();
+  final TextEditingController _petDescriptionController = TextEditingController();
 
   @override
   void initState() {
@@ -49,7 +53,7 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
   @override
   void dispose() {
     _descriptionController.dispose();
-    _petController.dispose();
+    _petDescriptionController.dispose();
     super.dispose();
   }
 
@@ -62,8 +66,16 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
     if (_hasObjetoGrande && _descriptionController.text.trim().isEmpty) {
       return false;
     }
-    // Si tiene mascota, necesita especificar cuál (OBLIGATORIO)
-    if (_hasMascota && _petController.text.trim().isEmpty) {
+    // Si tiene mascota, necesita tipo
+    if (_hasMascota && _petType == null) {
+      return false;
+    }
+    // Si es perro, necesita tamaño
+    if (_hasMascota && _petType == 'perro' && _petSize == null) {
+      return false;
+    }
+    // Si es "otro", necesita descripción
+    if (_hasMascota && _petType == 'otro' && _petDescriptionController.text.trim().isEmpty) {
       return false;
     }
     return true;
@@ -84,8 +96,12 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
         message = 'Selecciona al menos una opción';
       } else if (_hasObjetoGrande && _descriptionController.text.trim().isEmpty) {
         message = 'Describe qué objeto grande vas a llevar';
-      } else if (_hasMascota && _petController.text.trim().isEmpty) {
-        message = 'Indica qué mascota llevas (obligatorio para el conductor)';
+      } else if (_hasMascota && _petType == null) {
+        message = 'Selecciona el tipo de mascota';
+      } else if (_hasMascota && _petType == 'perro' && _petSize == null) {
+        message = 'Selecciona el tamaño de tu perro';
+      } else if (_hasMascota && _petType == 'otro' && _petDescriptionController.text.trim().isEmpty) {
+        message = 'Describe qué mascota llevas';
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -101,7 +117,9 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
     context.pop({
       'preference': _selectedPreferencesString,
       'description': _descriptionController.text.trim(),
-      'pet': _petController.text.trim(),
+      'petType': _petType,
+      'petSize': _petSize,
+      'petDescription': _petDescriptionController.text.trim(),
     });
   }
 
@@ -138,9 +156,9 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
               const SizedBox(height: 24),
             ],
 
-            // Mascota (solo si seleccionó mascota - OBLIGATORIO)
+            // Selector de mascota (solo si seleccionó mascota)
             if (_hasMascota) ...[
-              _buildPetField(),
+              _buildPetTypeSelector(),
               const SizedBox(height: 24),
             ],
 
@@ -187,7 +205,14 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
           isSelected: _hasMascota,
           icon: Icons.pets,
           label: 'Mascota',
-          onTap: () => setState(() => _hasMascota = !_hasMascota),
+          onTap: () => setState(() {
+            _hasMascota = !_hasMascota;
+            if (!_hasMascota) {
+              _petType = null;
+              _petSize = null;
+              _petDescriptionController.clear();
+            }
+          }),
         ),
       ],
     );
@@ -328,7 +353,7 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
     );
   }
 
-  Widget _buildPetField() {
+  Widget _buildPetTypeSelector() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -336,7 +361,7 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(
-              '¿Qué mascota?',
+              '¿Qué mascota llevas?',
               style: AppTextStyles.body1.copyWith(fontWeight: FontWeight.w600),
             ),
             Text(
@@ -345,13 +370,218 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
             ),
           ],
         ),
+        const SizedBox(height: 16),
+
+        // Opciones de tipo de mascota en horizontal
+        Row(
+          children: [
+            Expanded(
+              child: _buildPetTypeCard(
+                type: 'perro',
+                emoji: '🐕',
+                label: 'Perro',
+                isSelected: _petType == 'perro',
+                onTap: () => setState(() {
+                  _petType = 'perro';
+                  _petDescriptionController.clear();
+                }),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildPetTypeCard(
+                type: 'gato',
+                emoji: '🐱',
+                label: 'Gato',
+                isSelected: _petType == 'gato',
+                onTap: () => setState(() {
+                  _petType = 'gato';
+                  _petSize = null;
+                  _petDescriptionController.clear();
+                }),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildPetTypeCard(
+                type: 'otro',
+                emoji: '🐾',
+                label: 'Otro',
+                isSelected: _petType == 'otro',
+                onTap: () => setState(() {
+                  _petType = 'otro';
+                  _petSize = null;
+                }),
+              ),
+            ),
+          ],
+        ),
+
+        // Selector de tamaño (solo para perros)
+        if (_petType == 'perro') ...[
+          const SizedBox(height: 20),
+          _buildDogSizeSelector(),
+        ],
+
+        // Campo de descripción (solo para "otro")
+        if (_petType == 'otro') ...[
+          const SizedBox(height: 20),
+          _buildOtherPetField(),
+        ],
+
+        const SizedBox(height: 12),
+        Text(
+          'Es importante que el conductor sepa qué mascota llevas por posibles alergias.',
+          style: AppTextStyles.caption.copyWith(color: AppColors.textSecondary),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPetTypeCard({
+    required String type,
+    required String emoji,
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColors.primary.withOpacity(0.1)
+              : AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? AppColors.primary : AppColors.divider,
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+        child: Column(
+          children: [
+            Text(
+              emoji,
+              style: const TextStyle(fontSize: 32),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: AppTextStyles.body2.copyWith(
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                color: isSelected ? AppColors.textPrimary : AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDogSizeSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '¿De qué tamaño es tu perro?',
+          style: AppTextStyles.body2.copyWith(fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _buildDogSizeOption(
+                size: 'pequeño',
+                label: 'Pequeño',
+                description: '< 10 kg',
+                isSelected: _petSize == 'pequeño',
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildDogSizeOption(
+                size: 'mediano',
+                label: 'Mediano',
+                description: '10-25 kg',
+                isSelected: _petSize == 'mediano',
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _buildDogSizeOption(
+                size: 'grande',
+                label: 'Grande',
+                description: '> 25 kg',
+                isSelected: _petSize == 'grande',
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDogSizeOption({
+    required String size,
+    required String label,
+    required String description,
+    required bool isSelected,
+  }) {
+    return GestureDetector(
+      onTap: () => setState(() => _petSize = size),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? AppColors.primary.withOpacity(0.15)
+              : AppColors.tertiary.withOpacity(0.5),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? AppColors.primary : Colors.transparent,
+            width: 2,
+          ),
+        ),
+        child: Column(
+          children: [
+            Text(
+              label,
+              style: AppTextStyles.body2.copyWith(
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                color: isSelected ? AppColors.primary : AppColors.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              description,
+              style: AppTextStyles.caption.copyWith(
+                fontSize: 10,
+                color: isSelected ? AppColors.primary : AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOtherPetField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '¿Qué mascota es?',
+          style: AppTextStyles.body2.copyWith(fontWeight: FontWeight.w500),
+        ),
         const SizedBox(height: 12),
         TextField(
-          controller: _petController,
+          controller: _petDescriptionController,
           style: AppTextStyles.body2,
           maxLength: 50,
           decoration: InputDecoration(
-            hintText: 'Ej: Perro pequeño, gato',
+            hintText: 'Ej: Conejo, cuy, tortuga...',
             hintStyle: AppTextStyles.body2.copyWith(
               color: AppColors.textTertiary,
             ),
@@ -362,26 +592,21 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
             filled: true,
             fillColor: AppColors.surface,
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(color: AppColors.border, width: 1.5),
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(color: AppColors.border, width: 1.5),
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(12),
               borderSide: BorderSide(color: AppColors.primary, width: 2),
             ),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-            counterText: '${_petController.text.length}/50',
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            counterText: '${_petDescriptionController.text.length}/50',
           ),
           onChanged: (_) => setState(() {}),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Es importante que el conductor sepa qué mascota llevas por posibles alergias.',
-          style: AppTextStyles.caption.copyWith(color: AppColors.textSecondary),
         ),
       ],
     );

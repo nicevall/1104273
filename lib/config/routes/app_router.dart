@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../../data/models/trip_model.dart';
 import '../../presentation/screens/auth/splash_screen.dart';
 import '../../presentation/screens/auth/welcome_screen.dart';
 import '../../presentation/screens/auth/login_screen.dart';
@@ -24,6 +25,17 @@ import '../../presentation/screens/trip/trip_preferences_screen.dart';
 import '../../presentation/screens/trip/confirm_pickup_screen.dart';
 import '../../presentation/screens/trip/pick_location_screen.dart';
 import '../../presentation/screens/trip/searching_drivers_screen.dart';
+import '../../presentation/screens/trip/trip_results_screen.dart';
+import '../../presentation/screens/driver/trip_type_selection_screen.dart';
+import '../../presentation/screens/driver/create_trip_screen.dart';
+import '../../presentation/screens/driver/trip_created_screen.dart';
+import '../../presentation/screens/driver/driver_trip_detail_screen.dart';
+import '../../presentation/screens/driver/instant_trip_screen.dart';
+import '../../presentation/screens/driver/driver_active_requests_screen.dart';
+import '../../presentation/screens/driver/passenger_request_detail_screen.dart';
+import '../../presentation/screens/driver/accept_passenger_screen.dart';
+import '../../presentation/screens/driver/driver_active_trip_screen.dart';
+import '../../presentation/screens/trip/passenger_waiting_screen.dart';
 
 /// Router de la aplicación con go_router
 /// Define todas las rutas y navegación de UniRide
@@ -51,7 +63,12 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/login',
       name: 'login',
-      builder: (context, state) => const LoginScreen(),
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return LoginScreen(
+          prefillEmail: extra?['prefillEmail'] as String?,
+        );
+      },
     ),
 
     // Forgot Password Screen
@@ -238,6 +255,7 @@ final GoRouter appRouter = GoRouter(
           userId: extra?['userId'] as String? ?? '',
           userRole: extra?['userRole'] as String? ?? 'pasajero',
           hasVehicle: extra?['hasVehicle'] as bool? ?? false,
+          activeRole: extra?['activeRole'] as String?, // Rol activo inicial
         );
       },
     ),
@@ -368,11 +386,152 @@ final GoRouter appRouter = GoRouter(
       },
     ),
 
-    // Driver Home (temporal - próximamente)
+    // ==================== DRIVER ROUTES (FASE 2) ====================
+
+    // Trip Type Selection - Elegir tipo de viaje
     GoRoute(
-      path: '/driver/home',
-      name: 'driver-home',
-      builder: (context, state) => const _TempDriverHomeScreen(),
+      path: '/driver/create-trip',
+      name: 'driver-create-trip',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return TripTypeSelectionScreen(
+          userId: extra?['userId'] as String? ?? '',
+        );
+      },
+    ),
+
+    // Create Trip Form - Formulario de creación de viaje
+    GoRoute(
+      path: '/driver/create-trip/form',
+      name: 'driver-create-trip-form',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return CreateTripScreen(
+          userId: extra?['userId'] as String? ?? '',
+        );
+      },
+    ),
+
+    // Instant Trip - Disponibilidad inmediata
+    GoRoute(
+      path: '/driver/instant-trip',
+      name: 'driver-instant-trip',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return InstantTripScreen(
+          userId: extra?['userId'] as String? ?? '',
+        );
+      },
+    ),
+
+    // Trip Created - Confirmación de viaje creado
+    GoRoute(
+      path: '/driver/trip-created',
+      name: 'driver-trip-created',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return TripCreatedScreen(
+          trip: extra?['trip'] as TripModel,
+        );
+      },
+    ),
+
+    // Driver Trip Detail - Detalle de un viaje del conductor
+    GoRoute(
+      path: '/driver/trip/:tripId',
+      name: 'driver-trip-detail',
+      builder: (context, state) {
+        final tripId = state.pathParameters['tripId'] ?? '';
+        return DriverTripDetailScreen(tripId: tripId);
+      },
+    ),
+
+    // Driver Active Trip - Pantalla principal del viaje activo
+    GoRoute(
+      path: '/driver/active-trip/:tripId',
+      name: 'driver-active-trip',
+      builder: (context, state) {
+        final tripId = state.pathParameters['tripId'] ?? '';
+        return DriverActiveTripScreen(tripId: tripId);
+      },
+    ),
+
+    // Driver Active Requests - Lista de solicitudes de pasajeros
+    GoRoute(
+      path: '/driver/active-requests/:tripId',
+      name: 'driver-active-requests',
+      builder: (context, state) {
+        final tripId = state.pathParameters['tripId'] ?? '';
+        return DriverActiveRequestsScreen(tripId: tripId);
+      },
+    ),
+
+    // Passenger Request Detail - Detalle de solicitud de pasajero (legacy)
+    GoRoute(
+      path: '/driver/request-detail/:tripId/:passengerId',
+      name: 'driver-request-detail',
+      builder: (context, state) {
+        final tripId = state.pathParameters['tripId'] ?? '';
+        final passengerId = state.pathParameters['passengerId'] ?? '';
+        return PassengerRequestDetailScreen(
+          tripId: tripId,
+          passengerId: passengerId,
+        );
+      },
+    ),
+
+    // Accept Passenger - Ver y aceptar solicitud de pasajero (nuevo flujo)
+    GoRoute(
+      path: '/driver/passenger-request/:tripId/:requestId',
+      name: 'driver-passenger-request',
+      builder: (context, state) {
+        final tripId = state.pathParameters['tripId'] ?? '';
+        final requestId = state.pathParameters['requestId'] ?? '';
+        return AcceptPassengerScreen(
+          tripId: tripId,
+          requestId: requestId,
+        );
+      },
+    ),
+
+    // Passenger Waiting - Pasajero esperando conductor
+    GoRoute(
+      path: '/trip/waiting',
+      name: 'trip-waiting',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return PassengerWaitingScreen(
+          userId: extra?['userId'] as String? ?? '',
+          origin: extra?['origin'] as TripLocation,
+          destination: extra?['destination'] as TripLocation,
+          pickupPoint: extra?['pickupPoint'] as TripLocation,
+          referenceNote: extra?['referenceNote'] as String?,
+          preferences: (extra?['preferences'] as List<String>?) ?? const ['mochila'],
+          objectDescription: extra?['objectDescription'] as String?,
+          petType: extra?['petType'] as String?,
+          petSize: extra?['petSize'] as String?,
+          petDescription: extra?['petDescription'] as String?,
+          paymentMethod: extra?['paymentMethod'] as String? ?? 'Efectivo',
+        );
+      },
+    ),
+
+    // Trip Results - Resultados de búsqueda (pasajero)
+    GoRoute(
+      path: '/trip/results',
+      name: 'trip-results',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return TripResultsScreen(
+          trips: extra?['trips'] as List<TripModel>? ?? [],
+          userId: extra?['userId'] as String? ?? '',
+          pickupPoint: extra?['pickupPoint'] as TripLocation?,
+          referenceNote: extra?['referenceNote'] as String?,
+          preferences: (extra?['preferences'] as List<String>?) ?? const ['mochila'],
+          objectDescription: extra?['objectDescription'] as String?,
+          petDescription: extra?['petDescription'] as String?,
+        );
+      },
     ),
 
     // ==================== ERROR HANDLING ====================
@@ -395,116 +554,6 @@ final GoRouter appRouter = GoRouter(
   // Manejo de errores de navegación
   errorBuilder: (context, state) => const _NotFoundScreen(),
 );
-
-/// Pantalla temporal de home (placeholder)
-class _TempHomeScreen extends StatelessWidget {
-  const _TempHomeScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('UniRide - Home'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () => context.go('/welcome'),
-            tooltip: 'Cerrar sesión',
-          ),
-        ],
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.construction,
-              size: 80,
-              color: Colors.grey,
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'Pantalla de inicio',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 40),
-              child: Text(
-                'Esta pantalla se implementará en las próximas fases del proyecto.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-            const SizedBox(height: 32),
-            ElevatedButton(
-              onPressed: () => context.go('/welcome'),
-              child: const Text('Volver al inicio'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Pantalla temporal de conductor (placeholder)
-class _TempDriverHomeScreen extends StatelessWidget {
-  const _TempDriverHomeScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('UniRide - Conductor'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: () => context.go('/welcome'),
-            tooltip: 'Cerrar sesión',
-          ),
-        ],
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.check_circle,
-              size: 80,
-              color: Colors.green,
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              '¡Registro completado!',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 40),
-              child: Text(
-                'Tu vehículo ha sido registrado exitosamente. La pantalla del conductor se implementará en próximas fases.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-            const SizedBox(height: 32),
-            ElevatedButton(
-              onPressed: () => context.go('/welcome'),
-              child: const Text('Volver al inicio'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 /// Pantalla 404 - No encontrada
 class _NotFoundScreen extends StatelessWidget {

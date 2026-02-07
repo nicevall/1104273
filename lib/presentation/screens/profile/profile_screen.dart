@@ -274,21 +274,22 @@ class ProfileScreen extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: SizedBox(
         width: double.infinity,
-        child: OutlinedButton.icon(
+        child: ElevatedButton.icon(
           onPressed: () {
             _showLogoutDialog(context);
           },
-          icon: const Icon(Icons.logout, color: AppColors.error),
+          icon: const Icon(Icons.logout, color: Colors.white),
           label: Text(
             'Cerrar sesión',
-            style: AppTextStyles.button.copyWith(color: AppColors.error),
+            style: AppTextStyles.button.copyWith(color: Colors.white),
           ),
-          style: OutlinedButton.styleFrom(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.error,
             padding: const EdgeInsets.symmetric(vertical: 16),
-            side: const BorderSide(color: AppColors.error),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
+            elevation: 0,
           ),
         ),
       ),
@@ -310,24 +311,54 @@ class ProfileScreen extends StatelessWidget {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
         ),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: Text(
-              'Cancelar',
-              style: AppTextStyles.button.copyWith(color: AppColors.textSecondary),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              // Cerrar sesión usando AuthBloc
-              context.read<AuthBloc>().add(const LogoutEvent());
-            },
-            child: Text(
-              'Cerrar sesión',
-              style: AppTextStyles.button.copyWith(color: AppColors.error),
-            ),
+          Row(
+            children: [
+              // Botón Cancelar - outline gris
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: Text(
+                    'Cancelar',
+                    style: AppTextStyles.button.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              // Botón Cerrar sesión - rojo sólido
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                    // Cerrar sesión usando AuthBloc
+                    context.read<AuthBloc>().add(const LogoutEvent());
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: Text(
+                    'Cerrar sesión',
+                    style: AppTextStyles.button.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
