@@ -21,14 +21,14 @@ class FareSummaryDialog extends StatelessWidget {
     this.paymentMethod = 'Efectivo',
   });
 
-  /// Mostrar el diálogo
-  static Future<void> show(
+  /// Mostrar el diálogo. Retorna true si el conductor confirmó el pago.
+  static Future<bool?> show(
     BuildContext context, {
     required String passengerName,
     required TaximeterSession session,
     String paymentMethod = 'Efectivo',
   }) {
-    return showDialog(
+    return showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (context) => FareSummaryDialog(
@@ -214,8 +214,13 @@ class FareSummaryDialog extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(),
+              child: ElevatedButton.icon(
+                onPressed: () => Navigator.of(context).pop(true),
+                icon: const Icon(Icons.payments, size: 18),
+                label: const Text(
+                  'Confirmar pago',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
@@ -223,10 +228,6 @@ class FareSummaryDialog extends StatelessWidget {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
                   ),
-                ),
-                child: const Text(
-                  'Aceptar',
-                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
             ),

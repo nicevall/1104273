@@ -1,6 +1,6 @@
 // lib/presentation/widgets/home/search_bar_widget.dart
 // Barra de búsqueda estilo Uber
-// "¿A dónde vamos?" + botón "Luego"
+// "¿A dónde vamos?"
 
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
@@ -8,12 +8,10 @@ import '../../../core/constants/app_text_styles.dart';
 
 class SearchBarWidget extends StatelessWidget {
   final VoidCallback onTap;
-  final VoidCallback onScheduleLater;
 
   const SearchBarWidget({
     super.key,
     required this.onTap,
-    required this.onScheduleLater,
   });
 
   @override
@@ -57,46 +55,6 @@ class SearchBarWidget extends StatelessWidget {
                 '¿A dónde vamos?',
                 style: AppTextStyles.body1.copyWith(
                   color: AppColors.textSecondary,
-                ),
-              ),
-            ),
-
-            // Separador vertical
-            Container(
-              height: 24,
-              width: 1,
-              color: AppColors.divider,
-            ),
-
-            const SizedBox(width: 12),
-
-            // Botón "Luego" para programar
-            GestureDetector(
-              onTap: onScheduleLater,
-              behavior: HitTestBehavior.opaque,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.calendar_today,
-                      size: 16,
-                      color: AppColors.textPrimary,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Planificar',
-                      style: AppTextStyles.body2.copyWith(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ),

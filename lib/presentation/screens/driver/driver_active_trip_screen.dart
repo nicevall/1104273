@@ -28,6 +28,9 @@ import '../../../data/services/roads_service.dart';
 import '../../widgets/driver/taximeter_widget.dart';
 import '../../widgets/driver/fare_summary_dialog.dart';
 import '../../../core/utils/car_marker_generator.dart';
+import 'rate_passenger_screen.dart';
+import '../../../data/services/chat_service.dart';
+import '../../widgets/chat/chat_bottom_sheet.dart';
 import '../../blocs/auth/auth_bloc.dart';
 import '../../blocs/auth/auth_state.dart';
 import '../../blocs/trip/trip_bloc.dart';
@@ -54,6 +57,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   final _firestoreService = FirestoreService();
   final _directionsService = GoogleDirectionsService();
   final _ttsService = TtsService();
+  final _chatService = ChatService();
 
   // === Mapa ===
   GoogleMapController? _mapController;
@@ -158,7 +162,9 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       _startCompass();
 
       // Restaurar taxímetros si es necesario (por si el proceso fue pausado mucho tiempo)
-      _restoreTaximetersIfNeeded();
+      if (_currentTrip != null) {
+        _restoreTaximetersIfNeeded(_currentTrip!);
+      }
 
       // Forzar refresh de la UI
       if (mounted) setState(() {});
@@ -678,20 +684,115 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     // 80m threshold (más amplio que pickup porque destinos universitarios son áreas grandes)
     if (distToDestination < 80) {
       _hasTriggeredAutoComplete = true;
-      debugPrint('🏁 Llegó al destino (${distToDestination.round()}m), auto-completando viaje...');
-      _ttsService.speakAnnouncement('Has llegado al destino. Finalizando viaje automáticamente.');
-      _autoCompleteTrip();
+      debugPrint('🏁 Llegó al destino (${distToDestination.round()}m), mostrando overlay de pago...');
+      _ttsService.speakAnnouncement('Has llegado al destino. Confirma el pago de cada pasajero.');
+      _showDestinationPaymentSheet();
     }
   }
 
-  Future<void> _autoCompleteTrip() async {
-    // Auto drop-off de todos los pasajeros con taxímetro activo
-    if (_taximeterService.hasActiveSessions) {
-      await _autoDropOffAll();
+  /// Mostrar overlay de pago por pasajero al llegar al destino
+  Future<void> _showDestinationPaymentSheet() async {
+    if (!mounted || _currentTrip == null) return;
+
+    // Obtener pasajeros picked_up que necesitan pago
+    final pickedUpPassengers = _currentTrip!.passengers
+        .where((p) => p.status == 'picked_up')
+        .toList();
+
+    if (pickedUpPassengers.isEmpty) {
+      // No hay pasajeros, completar directamente
+      _finalizeTrip();
+      return;
     }
 
-    // Completar el viaje
+    // Procesar cada pasajero secuencialmente
+    for (final passenger in pickedUpPassengers) {
+      if (!mounted) break;
+
+      // Detener taxímetro para este pasajero
+      final finalSession = _taximeterService.stopMeter(passenger.userId);
+      if (finalSession == null) continue;
+
+      final name = _passengerNames[passenger.userId] ?? 'Pasajero';
+
+      // Actualizar estado en Firestore
+      try {
+        await _tripsService.dropOffPassenger(
+          widget.tripId,
+          passenger.userId,
+          finalFare: finalSession.currentFare,
+          dropoffLatitude: _currentPosition?.latitude ?? 0,
+          dropoffLongitude: _currentPosition?.longitude ?? 0,
+          totalDistanceKm: finalSession.totalDistanceKm,
+          totalWaitMinutes: finalSession.totalWaitMinutes,
+        );
+
+        if (mounted) {
+          context.read<TripBloc>().add(
+            UpdatePassengerStatusEvent(
+              tripId: widget.tripId,
+              passengerId: passenger.userId,
+              newStatus: 'dropped_off',
+            ),
+          );
+        }
+      } catch (e) {
+        debugPrint('Error en drop-off automático: $e');
+      }
+
+      // Actualizar UI
+      setState(() {
+        _activeMeterSessions.remove(passenger.userId);
+      });
+
+      // Mostrar diálogo de pago
+      if (mounted) {
+        final pagoConfirmado = await FareSummaryDialog.show(
+          context,
+          passengerName: name,
+          session: finalSession,
+          paymentMethod: passenger.paymentMethod,
+        );
+
+        if (pagoConfirmado == true && mounted) {
+          // Marcar pago como recibido
+          try {
+            await _tripsService.updatePassengerPaymentStatus(
+              widget.tripId,
+              passenger.userId,
+              'paid',
+            );
+          } catch (e) {
+            debugPrint('Error actualizando pago: $e');
+          }
+
+          // Calificar al pasajero
+          if (mounted) {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => RatePassengerScreen(
+                  tripId: widget.tripId,
+                  driverId: _currentTrip?.driverId ?? '',
+                  passengerId: passenger.userId,
+                  passengerName: name,
+                  fare: finalSession.currentFare,
+                ),
+              ),
+            );
+          }
+        }
+      }
+    }
+
+    // Todos los pasajeros procesados — completar viaje
+    _finalizeTrip();
+  }
+
+  /// Completar el viaje (enviar evento al BLoC)
+  void _finalizeTrip() {
     if (mounted) {
+      _ttsService.speakAnnouncement('Viaje finalizado. ¡Buen viaje!');
       context.read<TripBloc>().add(
             CompleteTripEvent(tripId: widget.tripId),
           );
@@ -714,7 +815,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         final deviation = _deviationsCache[request.requestId];
 
         final buffer = StringBuffer();
-        buffer.write('Nueva solicitud. $name quiere que lo recojas en $pickup.');
+        buffer.write('Nueva solicitud. $name quiere que lo recojas en $pickup, pago con ${request.paymentMethod.toLowerCase()}.');
 
         if (deviation != null) {
           buffer.write(' Desvío de $deviation minutos.');
@@ -1048,6 +1149,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     }
 
     _ttsService.speakAnnouncement('Pasajero recogido. Taxímetro iniciado.');
+
+    // Desactivar chat con este pasajero (chat solo activo en status 'accepted')
+    _chatService.deactivateChat(widget.tripId, passengerId);
+
     _resetWaitingState();
     // Recalcular ruta sin este pickup
     _calculateRoute();
@@ -1347,6 +1452,19 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     );
   }
 
+  /// Obtener método de pago de un pasajero del trip actual
+  String _getPassengerPaymentMethod(String passengerId) {
+    if (_currentTrip == null) return 'Efectivo';
+    try {
+      final passenger = _currentTrip!.passengers.firstWhere(
+        (p) => p.userId == passengerId,
+      );
+      return passenger.paymentMethod;
+    } catch (_) {
+      return 'Efectivo';
+    }
+  }
+
   Future<void> _confirmDropOff(String passengerId) async {
     // Detener taxímetro local
     final finalSession = _taximeterService.stopMeter(passengerId);
@@ -1390,51 +1508,49 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       'Pasajero dejado. Tarifa: \$${finalSession.currentFare.toStringAsFixed(2)}',
     );
 
-    // Mostrar resumen de tarifa
+    // Mostrar resumen de tarifa y esperar confirmación de pago
     if (mounted) {
-      await FareSummaryDialog.show(
+      final pagoConfirmado = await FareSummaryDialog.show(
         context,
         passengerName: name,
         session: finalSession,
+        paymentMethod: _getPassengerPaymentMethod(passengerId),
       );
+
+      if (pagoConfirmado == true && mounted) {
+        // Actualizar paymentStatus a 'paid' en Firestore
+        try {
+          await _tripsService.updatePassengerPaymentStatus(
+            widget.tripId,
+            passengerId,
+            'paid',
+          );
+        } catch (e) {
+          debugPrint('Error actualizando pago: $e');
+        }
+
+        // Navegar a pantalla de calificación del pasajero
+        if (mounted) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => RatePassengerScreen(
+                tripId: widget.tripId,
+                driverId: _currentTrip?.driverId ?? '',
+                passengerId: passengerId,
+                passengerName: name,
+                fare: finalSession.currentFare,
+              ),
+            ),
+          );
+        }
+      }
     }
 
     // Recalcular ruta si quedan pasajeros
     if (_taximeterService.hasActiveSessions) {
       _calculateRoute();
     }
-  }
-
-  /// Auto drop-off de todos los pasajeros picked_up que queden
-  Future<void> _autoDropOffAll() async {
-    final sessions = _taximeterService.stopAll();
-    for (final entry in sessions.entries) {
-      try {
-        await _tripsService.dropOffPassenger(
-          widget.tripId,
-          entry.key,
-          finalFare: entry.value.currentFare,
-          dropoffLatitude: _currentPosition?.latitude ?? 0,
-          dropoffLongitude: _currentPosition?.longitude ?? 0,
-          totalDistanceKm: entry.value.totalDistanceKm,
-          totalWaitMinutes: entry.value.totalWaitMinutes,
-        );
-
-        context.read<TripBloc>().add(
-          UpdatePassengerStatusEvent(
-            tripId: widget.tripId,
-            passengerId: entry.key,
-            newStatus: 'dropped_off',
-          ),
-        );
-      } catch (e) {
-        debugPrint('Error auto drop-off ${entry.key}: $e');
-      }
-    }
-
-    setState(() {
-      _activeMeterSessions.clear();
-    });
   }
 
   void _completeTrip() {
@@ -1476,15 +1592,12 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                 child: ElevatedButton(
                   onPressed: () async {
                     Navigator.pop(ctx);
-                    // Auto drop-off de pasajeros que aún tengan taxímetro activo
+                    // Mostrar flujo de pago por pasajero + rating
                     if (_taximeterService.hasActiveSessions) {
-                      await _autoDropOffAll();
-                    }
-                    _ttsService.speakAnnouncement('Viaje finalizado. ¡Buen viaje!');
-                    if (mounted) {
-                      context.read<TripBloc>().add(
-                        CompleteTripEvent(tripId: widget.tripId),
-                      );
+                      await _showDestinationPaymentSheet();
+                    } else {
+                      // No hay taxímetros activos, finalizar directamente
+                      _finalizeTrip();
                     }
                   },
                   style: ElevatedButton.styleFrom(
@@ -1700,13 +1813,13 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                   // Botones de acción (abajo del todo)
                   _buildActionButtons(trip),
 
-                  // Taxímetro flotante (encima de los botones)
+                  // Chip "No más solicitudes" (arriba)
+                  _buildStopAcceptingChip(trip),
+
+                  // Taxímetro flotante (encima del botón finalizar)
                   if (_activeMeterSessions.isNotEmpty)
                     Positioned(
-                      // Calcular bottom dinámicamente: botones (~80px) + espacio
-                      bottom: (!_stoppedAccepting && trip.availableSeats > 0)
-                          ? 160  // Hay 2 botones (no recibir + finalizar)
-                          : 110, // Solo botón finalizar
+                      bottom: 110,
                       left: 0,
                       right: 0,
                       child: TaximeterWidget(
@@ -2380,7 +2493,41 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
                 const SizedBox(height: 24),
 
-                // Botones
+                // Botón de chat
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      if (_waitingForPassenger != null) {
+                        final passengerId = _waitingForPassenger!.userId;
+                        final passengerName = _passengerNames[passengerId] ?? 'Pasajero';
+                        ChatBottomSheet.show(
+                          context,
+                          tripId: widget.tripId,
+                          passengerId: passengerId,
+                          currentUserId: _currentTrip?.driverId ?? '',
+                          currentUserRole: 'conductor',
+                          isActive: true,
+                          otherUserName: passengerName,
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.chat_bubble_outline, size: 16),
+                    label: const Text('Mensaje al pasajero'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      side: const BorderSide(color: AppColors.primary),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // Botones de acción
                 Row(
                   children: [
                     Expanded(
@@ -2419,62 +2566,76 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // BOTONES DE ACCIÓN
   // ============================================================
 
-  Widget _buildActionButtons(TripModel trip) {
+  /// Chip superior "No recibir más pasajeros" (se muestra arriba del mapa)
+  Widget _buildStopAcceptingChip(TripModel trip) {
     final bool isFull = trip.availableSeats <= 0;
+    if (_stoppedAccepting || isFull) return const SizedBox.shrink();
 
+    return Positioned(
+      top: 100,
+      left: 16,
+      right: 16,
+      child: Center(
+        child: GestureDetector(
+          onTap: () {
+            setState(() => _stoppedAccepting = true);
+            _ttsService.speakAnnouncement('No se recibirán más pasajeros');
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.black87,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.block, size: 16, color: Colors.white70),
+                const SizedBox(width: 8),
+                Text(
+                  'No recibir más pasajeros',
+                  style: AppTextStyles.body2.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionButtons(TripModel trip) {
     return Positioned(
       bottom: 24,
       left: 16,
       right: 16,
       child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Botón "No recibir más pasajeros"
-            if (!_stoppedAccepting && !isFull)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() => _stoppedAccepting = true);
-                      _ttsService.speakAnnouncement('No se recibirán más pasajeros');
-                    },
-                    icon: const Icon(Icons.block, size: 18),
-                    label: const Text('No recibir más pasajeros'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      side: const BorderSide(color: Colors.white54),
-                      backgroundColor: Colors.black54,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                  ),
-                ),
+        child: SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: _completeTrip,
+            icon: const Icon(Icons.flag),
+            label: const Text('Finalizar viaje'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.success,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
               ),
-
-            // Botón "Finalizar viaje"
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _completeTrip,
-                icon: const Icon(Icons.flag),
-                label: const Text('Finalizar viaje'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.success,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  elevation: 4,
-                ),
-              ),
+              elevation: 4,
             ),
-          ],
+          ),
         ),
       ),
     );

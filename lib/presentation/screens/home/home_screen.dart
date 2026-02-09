@@ -6,15 +6,20 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../data/models/trip_model.dart';
 import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/firestore_service.dart';
+import '../../../data/services/location_cache_service.dart';
 import '../../../data/services/trips_service.dart';
+import '../../blocs/auth/auth_bloc.dart';
+import '../../blocs/auth/auth_state.dart';
 import '../../blocs/trip/trip_bloc.dart';
 import '../../blocs/trip/trip_event.dart';
 import '../../blocs/trip/trip_state.dart';
+import '../../widgets/common/map_preloader.dart';
 import '../../widgets/home/role_switcher.dart';
 import '../../widgets/home/search_bar_widget.dart';
 import '../../widgets/home/recent_place_card.dart';
@@ -381,16 +386,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  void _onScheduleLater() {
-    // TODO: Implementar programación de viaje
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Programar viaje - Próximamente'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
-
   void _onRecentPlaceTap(RecentPlace place) {
     // Navegar directamente al mapa con este destino
     context.push('/trip/plan', extra: {
@@ -407,12 +402,37 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: _activeRole == 'pasajero'
-            ? _buildPassengerHome()
-            : _buildDriverHome(),
+    return BlocListener<AuthBloc, AuthState>(
+      listener: (context, state) {
+        if (state is Unauthenticated) {
+          context.go('/welcome');
+        }
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: Stack(
+          children: [
+            // Precargador de Google Maps (invisible)
+            Builder(
+              builder: (context) {
+                final cache = LocationCacheService();
+                if (cache.hasFreshLocation) {
+                  final loc = cache.cachedLocation!;
+                  return MapPreloader(
+                    initialPosition: LatLng(loc.latitude, loc.longitude),
+                  );
+                }
+                return const MapPreloader();
+              },
+            ),
+            // Contenido principal
+            SafeArea(
+              child: _activeRole == 'pasajero'
+                  ? _buildPassengerHome()
+                  : _buildDriverHome(),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -457,7 +477,6 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: SearchBarWidget(
               onTap: _onSearchTap,
-              onScheduleLater: _onScheduleLater,
             ),
           ),
 
@@ -526,6 +545,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
+            const SizedBox(height: 24),
+
+            // Link al historial de viajes
+            _buildHistorialLink(),
+
             const SizedBox(height: 40),
           ],
         ),
@@ -564,11 +588,6 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: TripTypeOptions(
               onInstantTap: () => _handleInstantTripTap(),
-              onScheduledTap: () {
-                context.push('/driver/create-trip/form', extra: {
-                  'userId': widget.userId,
-                });
-              },
             ),
           ),
 
@@ -749,8 +768,60 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
+            const SizedBox(height: 24),
+
+            // Link al historial de viajes
+            _buildHistorialLink(),
+
             const SizedBox(height: 40),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistorialLink() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: GestureDetector(
+        onTap: () {
+          context.push('/historial', extra: {
+            'userId': widget.userId,
+            'activeRole': _activeRole,
+          });
+        },
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            border: Border(
+              top: BorderSide(color: AppColors.divider, width: 1),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.history,
+                size: 18,
+                color: AppColors.primary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Ver historial de viajes',
+                style: AppTextStyles.body2.copyWith(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.arrow_forward_ios,
+                size: 14,
+                color: AppColors.primary,
+              ),
+            ],
+          ),
         ),
       ),
     );

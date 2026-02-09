@@ -1,5 +1,5 @@
 // lib/presentation/widgets/driver/trip_type_options.dart
-// Widget que muestra las dos opciones de viaje: Instantáneo y Planificado
+// Widget que muestra la opción de viaje instantáneo
 
 import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
@@ -7,12 +7,10 @@ import '../../../core/constants/app_text_styles.dart';
 
 class TripTypeOptions extends StatelessWidget {
   final VoidCallback onInstantTap;
-  final VoidCallback onScheduledTap;
 
   const TripTypeOptions({
     super.key,
     required this.onInstantTap,
-    required this.onScheduledTap,
   });
 
   @override
@@ -25,38 +23,17 @@ class TripTypeOptions extends StatelessWidget {
           style: AppTextStyles.h3,
         ),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            // Opción: Viaje Instantáneo
-            Expanded(
-              child: _TripOptionCard(
-                icon: Icons.flash_on,
-                iconColor: Colors.amber,
-                title: 'Instantáneo',
-                subtitle: 'Salgo ahora',
-                gradientColors: [
-                  AppColors.primary,
-                  AppColors.primary.withOpacity(0.8),
-                ],
-                onTap: onInstantTap,
-              ),
-            ),
-            const SizedBox(width: 12),
-            // Opción: Viaje Planificado
-            Expanded(
-              child: _TripOptionCard(
-                icon: Icons.calendar_today,
-                iconColor: AppColors.info,
-                title: 'Planificado',
-                subtitle: 'Programar hora',
-                gradientColors: [
-                  AppColors.secondary,
-                  AppColors.secondary.withOpacity(0.8),
-                ],
-                onTap: onScheduledTap,
-              ),
-            ),
+        // Opción: Viaje Instantáneo (ancho completo)
+        _TripOptionCard(
+          icon: Icons.flash_on,
+          iconColor: Colors.amber,
+          title: 'Instantáneo',
+          subtitle: 'Salgo ahora',
+          gradientColors: [
+            AppColors.primary,
+            AppColors.primary.withOpacity(0.8),
           ],
+          onTap: onInstantTap,
         ),
       ],
     );
@@ -85,6 +62,7 @@ class _TripOptionCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
+        width: double.infinity,
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -101,8 +79,7 @@ class _TripOptionCard extends StatelessWidget {
             ),
           ],
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Row(
           children: [
             // Icono
             Container(
@@ -118,22 +95,32 @@ class _TripOptionCard extends StatelessWidget {
                 size: 24,
               ),
             ),
-            const SizedBox(height: 12),
-            // Título
-            Text(
-              title,
-              style: AppTextStyles.body1.copyWith(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-              ),
+            const SizedBox(width: 16),
+            // Título y subtítulo
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: AppTextStyles.body1.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: AppTextStyles.caption.copyWith(
+                    color: Colors.white.withOpacity(0.8),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 2),
-            // Subtítulo
-            Text(
-              subtitle,
-              style: AppTextStyles.caption.copyWith(
-                color: Colors.white.withOpacity(0.8),
-              ),
+            const Spacer(),
+            Icon(
+              Icons.arrow_forward_ios,
+              color: Colors.white.withOpacity(0.7),
+              size: 18,
             ),
           ],
         ),

@@ -17,7 +17,8 @@ import '../../presentation/screens/vehicle/vehicle_matricula_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_license_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_photo_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_summary_screen.dart';
-import '../../presentation/screens/home/main_navigation_screen.dart';
+import '../../presentation/screens/home/home_screen.dart';
+import '../../presentation/screens/home/activity_screen.dart';
 import '../../presentation/screens/profile/profile_screen.dart';
 import '../../presentation/screens/trip/plan_trip_screen.dart';
 import '../../presentation/screens/trip/map_route_screen.dart';
@@ -26,10 +27,6 @@ import '../../presentation/screens/trip/confirm_pickup_screen.dart';
 import '../../presentation/screens/trip/pick_location_screen.dart';
 import '../../presentation/screens/trip/searching_drivers_screen.dart';
 import '../../presentation/screens/trip/trip_results_screen.dart';
-import '../../presentation/screens/driver/trip_type_selection_screen.dart';
-import '../../presentation/screens/driver/create_trip_screen.dart';
-import '../../presentation/screens/driver/trip_created_screen.dart';
-
 import '../../presentation/screens/driver/instant_trip_screen.dart';
 import '../../presentation/screens/driver/driver_active_requests_screen.dart';
 import '../../presentation/screens/driver/passenger_request_detail_screen.dart';
@@ -247,18 +244,30 @@ final GoRouter appRouter = GoRouter(
 
     // ==================== MAIN APP ROUTES ====================
 
-    // Home Screen con Bottom Navigation
+    // Home Screen (sin bottom navigation)
     GoRoute(
       path: '/home',
       name: 'home',
       builder: (context, state) {
         final extra = state.extra as Map<String, dynamic>?;
-        return MainNavigationScreen(
+        return HomeScreen(
           userId: extra?['userId'] as String? ?? '',
           userRole: extra?['userRole'] as String? ?? 'pasajero',
           hasVehicle: extra?['hasVehicle'] as bool? ?? false,
-          activeRole: extra?['activeRole'] as String?, // Rol activo inicial
-          initialTab: extra?['initialTab'] as int?, // Tab inicial (0=Inicio, 1=Actividad, 2=Mensajes)
+          activeRole: extra?['activeRole'] as String?,
+        );
+      },
+    ),
+
+    // Historial de viajes
+    GoRoute(
+      path: '/historial',
+      name: 'historial',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return ActivityScreen(
+          userId: extra?['userId'] as String? ?? '',
+          activeRole: extra?['activeRole'] as String? ?? 'pasajero',
         );
       },
     ),
@@ -394,30 +403,6 @@ final GoRouter appRouter = GoRouter(
 
     // ==================== DRIVER ROUTES (FASE 2) ====================
 
-    // Trip Type Selection - Elegir tipo de viaje
-    GoRoute(
-      path: '/driver/create-trip',
-      name: 'driver-create-trip',
-      builder: (context, state) {
-        final extra = state.extra as Map<String, dynamic>?;
-        return TripTypeSelectionScreen(
-          userId: extra?['userId'] as String? ?? '',
-        );
-      },
-    ),
-
-    // Create Trip Form - Formulario de creación de viaje
-    GoRoute(
-      path: '/driver/create-trip/form',
-      name: 'driver-create-trip-form',
-      builder: (context, state) {
-        final extra = state.extra as Map<String, dynamic>?;
-        return CreateTripScreen(
-          userId: extra?['userId'] as String? ?? '',
-        );
-      },
-    ),
-
     // Instant Trip - Disponibilidad inmediata
     GoRoute(
       path: '/driver/instant-trip',
@@ -426,18 +411,6 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>?;
         return InstantTripScreen(
           userId: extra?['userId'] as String? ?? '',
-        );
-      },
-    ),
-
-    // Trip Created - Confirmación de viaje creado
-    GoRoute(
-      path: '/driver/trip-created',
-      name: 'driver-trip-created',
-      builder: (context, state) {
-        final extra = state.extra as Map<String, dynamic>?;
-        return TripCreatedScreen(
-          trip: extra?['trip'] as TripModel,
         );
       },
     ),

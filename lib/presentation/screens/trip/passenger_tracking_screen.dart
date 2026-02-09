@@ -17,6 +17,8 @@ import '../../../data/models/user_model.dart';
 import '../../../data/services/trips_service.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/google_directions_service.dart';
+import '../../../data/services/chat_service.dart';
+import '../../widgets/chat/chat_bottom_sheet.dart';
 
 class PassengerTrackingScreen extends StatefulWidget {
   final String tripId;
@@ -43,6 +45,7 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
   final _tripsService = TripsService();
   final _firestoreService = FirestoreService();
   final _directionsService = GoogleDirectionsService();
+  final _chatService = ChatService();
 
   // Mapa
   GoogleMapController? _mapController;
@@ -193,6 +196,12 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     // Capturar driverId temprano (para diálogos de rating/cancel)
     if (_driverId.isEmpty && trip.driverId.isNotEmpty) {
       _driverId = trip.driverId;
+      // Inicializar chat cuando se captura el conductor
+      _chatService.initializeChat(
+        tripId: widget.tripId,
+        passengerId: widget.userId,
+        driverId: trip.driverId,
+      );
     }
 
     // Cargar info del conductor una sola vez
@@ -1334,7 +1343,17 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     onPressed: () {
-                      context.go('/home', extra: {'initialTab': 2});
+                      ChatBottomSheet.show(
+                        context,
+                        tripId: widget.tripId,
+                        passengerId: widget.userId,
+                        currentUserId: widget.userId,
+                        currentUserRole: 'pasajero',
+                        isActive: _passengerStatus == 'accepted',
+                        otherUserName: _driverUser != null
+                            ? '${_driverUser!.firstName} ${_driverUser!.lastName}'
+                            : 'Conductor',
+                      );
                     },
                     icon: const Icon(Icons.chat_bubble_outline, size: 18),
                     label: const Text(

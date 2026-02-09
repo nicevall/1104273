@@ -179,6 +179,35 @@ class TripsService {
     }
   }
 
+  /// Actualizar estado de pago de un pasajero
+  Future<void> updatePassengerPaymentStatus(
+    String tripId,
+    String passengerId,
+    String newPaymentStatus,
+  ) async {
+    try {
+      final tripDoc = await _firestore.collection(_tripsCollection).doc(tripId).get();
+      if (!tripDoc.exists) return;
+
+      final tripData = tripDoc.data()!;
+      final passengers = (tripData['passengers'] as List<dynamic>)
+          .map((p) => Map<String, dynamic>.from(p as Map))
+          .toList();
+
+      final idx = passengers.indexWhere((p) => p['userId'] == passengerId);
+      if (idx >= 0) {
+        passengers[idx]['paymentStatus'] = newPaymentStatus;
+        await _firestore.collection(_tripsCollection).doc(tripId).update({
+          'passengers': passengers,
+        });
+      }
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      throw Exception('Error al actualizar pago: $e');
+    }
+  }
+
   /// Obtener viajes del conductor (una sola vez)
   ///
   /// Filtrados por status opcionales, ordenados por fecha de salida
