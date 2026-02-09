@@ -104,6 +104,29 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     _startTripStream();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('▶️ Pasajero: app en primer plano — resincronizando');
+
+      // Re-suscribir al stream del viaje si se desconectó
+      if (_tripSubscription == null) {
+        _startTripStream();
+      }
+
+      // Recalibrar timer de espera con datos de Firestore
+      if (_currentTrip != null && !_isPickedUp) {
+        _syncWaitTimerFromFirestore(_currentTrip!);
+      }
+
+      // Actualizar ETA con posición actual del conductor
+      _updateETA();
+
+      // Forzar refresh de UI
+      if (mounted) setState(() {});
+    }
+  }
+
   void _initPickupCircle() {
     _circles = {
       Circle(

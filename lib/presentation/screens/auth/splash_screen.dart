@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../data/services/location_cache_service.dart';
@@ -64,6 +65,47 @@ class _SplashScreenState extends State<SplashScreen> {
     }
   }
 
+  /// Verifica si hay una sesión guardada para skip rápido del splash
+  /// Retorna true si se pudo hacer skip (navegó directo a /home)
+  Future<bool> _tryQuickResume(Authenticated state) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedUserId = prefs.getString('last_user_id');
+
+      // Si hay datos guardados y coincide el usuario → skip splash
+      if (savedUserId != null && savedUserId == state.user.userId) {
+        debugPrint('⚡ Quick resume: sesión activa, skip splash');
+
+        // Iniciar carga de ubicación en background (no esperar)
+        LocationCacheService().initializeLocation();
+
+        if (mounted) {
+          context.go('/home', extra: {
+            'userId': state.user.userId,
+            'userRole': state.user.role,
+            'hasVehicle': state.user.hasVehicle,
+          });
+        }
+        return true;
+      }
+    } catch (e) {
+      debugPrint('⚡ Quick resume error: $e');
+    }
+    return false;
+  }
+
+  /// Guarda datos de sesión en SharedPreferences para skip rápido
+  Future<void> _saveSessionData(String userId, String role, bool hasVehicle) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('last_user_id', userId);
+      await prefs.setString('last_user_role', role);
+      await prefs.setBool('has_vehicle', hasVehicle);
+    } catch (e) {
+      debugPrint('⚡ Error guardando sesión: $e');
+    }
+  }
+
   /// Carga la ubicación, pre-carga el mapa y navega al home
   Future<void> _loadLocationAndNavigate(Authenticated state) async {
     final user = state.user;
@@ -80,6 +122,11 @@ class _SplashScreenState extends State<SplashScreen> {
       return;
     }
 
+    // Intentar skip rápido si ya tenía sesión guardada
+    final skipped = await _tryQuickResume(state);
+    if (skipped) return;
+
+    // Flujo normal (primera vez o sesión nueva)
     // Verificar si tiene permisos y GPS activo
     final hasLocationAccess = await _hasLocationPermissionAndService();
 
@@ -117,6 +164,9 @@ class _SplashScreenState extends State<SplashScreen> {
       // No tiene permisos o GPS apagado → iniciar en background y continuar
       LocationCacheService().initializeLocation();
     }
+
+    // Guardar datos de sesión para próximo inicio rápido
+    await _saveSessionData(user.userId, user.role, user.hasVehicle);
 
     // Navegar al home
     if (mounted) {

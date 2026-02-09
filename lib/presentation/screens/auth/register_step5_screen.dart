@@ -320,20 +320,47 @@ class _RegisterStep5ScreenState extends State<RegisterStep5Screen> {
                             content: const Text(
                               '¿Estás seguro que deseas cancelar? Perderás todo el progreso.',
                             ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            actionsAlignment: MainAxisAlignment.center,
+                            actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
                             actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context),
-                                child: const Text('No'),
-                              ),
-                              TextButton(
-                                onPressed: () {
-                                  Navigator.pop(context);
-                                  context.go('/welcome');
-                                },
-                                child: Text(
-                                  'Sí, cancelar',
-                                  style: TextStyle(color: AppColors.error),
-                                ),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      style: OutlinedButton.styleFrom(
+                                        side: BorderSide(color: AppColors.border),
+                                        foregroundColor: AppColors.textSecondary,
+                                        padding: const EdgeInsets.symmetric(vertical: 14),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                      ),
+                                      child: const Text('No'),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: ElevatedButton(
+                                      onPressed: () {
+                                        Navigator.pop(context);
+                                        context.go('/welcome');
+                                      },
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: AppColors.error,
+                                        foregroundColor: Colors.white,
+                                        padding: const EdgeInsets.symmetric(vertical: 14),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                      ),
+                                      child: const Text('Sí, cancelar'),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),

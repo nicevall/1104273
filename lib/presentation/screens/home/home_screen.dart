@@ -151,6 +151,40 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
+      // === PASAJERO: Buscar si ya está como pasajero picked_up en un viaje activo ===
+      // Query 2.5: Buscar viajes in_progress donde este usuario sea pasajero picked_up
+      // (caso: app fue matada mientras pasajero estaba en viaje con taxímetro corriendo)
+      final inProgressTripsSnap = await firestore
+          .collection('trips')
+          .where('status', isEqualTo: 'in_progress')
+          .get();
+
+      if (!mounted) return;
+
+      for (final tripDoc in inProgressTripsSnap.docs) {
+        final tripData = tripDoc.data();
+        final passengers = tripData['passengers'] as List<dynamic>? ?? [];
+        for (final p in passengers) {
+          final pMap = p as Map<String, dynamic>;
+          if (pMap['userId'] == widget.userId &&
+              (pMap['status'] == 'picked_up' || pMap['status'] == 'accepted')) {
+            final destination = tripData['destination'] as Map<String, dynamic>?;
+            final pickupPoint = pMap['pickupPoint'] as Map<String, dynamic>?;
+
+            if (destination != null && pickupPoint != null) {
+              debugPrint('🔄 Auto-redirect pasajero: ${pMap['status']} en viaje in_progress (${tripDoc.id})');
+              context.go('/trip/tracking', extra: {
+                'tripId': tripDoc.id,
+                'userId': widget.userId,
+                'pickupPoint': TripLocation.fromJson(pickupPoint),
+                'destination': TripLocation.fromJson(destination),
+              });
+              return;
+            }
+          }
+        }
+      }
+
       // === PASAJERO: Buscar solicitudes activas como pasajero ===
       // Query 3: Buscar ride_request con status 'accepted' (pasajero aceptado por un conductor)
       final acceptedReqSnap = await firestore

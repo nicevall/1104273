@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/firebase_auth_service.dart';
 import '../../../data/services/firestore_service.dart';
@@ -151,6 +152,14 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   ) async {
     print('🔐 AuthBloc: Cerrando sesión...');
     try {
+      // Limpiar datos de sesión rápida (SharedPreferences)
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove('last_user_id');
+        await prefs.remove('last_user_role');
+        await prefs.remove('has_vehicle');
+      } catch (_) {}
+
       await _authService.logout();
       print('🔐 AuthBloc: Sesión cerrada exitosamente → Unauthenticated');
       emit(const Unauthenticated());

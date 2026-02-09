@@ -47,7 +47,7 @@ class DriverActiveTripScreen extends StatefulWidget {
 }
 
 class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   // === Servicios ===
   final _tripsService = TripsService();
   final _requestsService = RideRequestsService();
@@ -137,11 +137,32 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initAnimations();
     _loadCarIcon();
     _startLocationTracking();
     _startCompass();
     _loadInitialData();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      // App va a segundo plano — pausar brújula (GPS se auto-maneja por Android)
+      debugPrint('⏸️ Conductor: app en segundo plano — pausando compass');
+      _compassSubscription?.cancel();
+      _compassSubscription = null;
+    } else if (state == AppLifecycleState.resumed) {
+      // App vuelve a primer plano — re-suscribir brújula y refrescar UI
+      debugPrint('▶️ Conductor: app en primer plano — restaurando');
+      _startCompass();
+
+      // Restaurar taxímetros si es necesario (por si el proceso fue pausado mucho tiempo)
+      _restoreTaximetersIfNeeded();
+
+      // Forzar refresh de la UI
+      if (mounted) setState(() {});
+    }
   }
 
   /// Escuchar brújula del dispositivo para orientar la cámara
@@ -1571,6 +1592,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _positionStream?.cancel();
     _compassSubscription?.cancel();
     _waitTimer?.cancel();

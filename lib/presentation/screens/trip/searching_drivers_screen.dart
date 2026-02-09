@@ -292,23 +292,24 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
               ),
             ),
             const SizedBox(height: 12),
-            // Botón secundario: Cancelar solicitud
+            // Botón secundario: Cancelar solicitud (destructivo → rojo)
             SizedBox(
               width: double.infinity,
-              child: OutlinedButton(
+              child: ElevatedButton(
                 onPressed: () => Navigator.pop(context, 'cancel'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.error,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error,
+                  foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  side: BorderSide(color: AppColors.error),
+                  elevation: 0,
                 ),
                 child: Text(
                   'Cancelar solicitud',
                   style: AppTextStyles.button.copyWith(
-                    color: AppColors.error,
+                    color: Colors.white,
                   ),
                 ),
               ),
@@ -447,7 +448,7 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: SizedBox(
         width: double.infinity,
-        child: TextButton(
+        child: ElevatedButton(
           onPressed: () async {
             HapticFeedback.mediumImpact();
             final result = await showDialog<String>(
@@ -461,18 +462,19 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
               _retrySearch();
             }
           },
-          style: TextButton.styleFrom(
-            foregroundColor: AppColors.error,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.error,
+            foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(vertical: 14),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
+            elevation: 0,
           ),
           child: Text(
             'Cancelar búsqueda',
-            style: AppTextStyles.body1.copyWith(
-              color: AppColors.error,
-              fontWeight: FontWeight.w500,
+            style: AppTextStyles.button.copyWith(
+              color: Colors.white,
             ),
           ),
         ),
@@ -735,23 +737,24 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
                 ),
               ),
               const SizedBox(height: 12),
-              // Cancelar solicitud
+              // Cancelar solicitud (destructivo → rojo)
               SizedBox(
                 width: double.infinity,
-                child: OutlinedButton(
+                child: ElevatedButton(
                   onPressed: _cancelSearch,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.textSecondary,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    side: BorderSide(color: AppColors.border),
+                    elevation: 0,
                   ),
                   child: Text(
                     'Cancelar solicitud',
                     style: AppTextStyles.button.copyWith(
-                      color: AppColors.textSecondary,
+                      color: Colors.white,
                     ),
                   ),
                 ),
