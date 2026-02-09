@@ -2,11 +2,13 @@
 // Pantalla Home principal - Estilo Uber
 // Muestra búsqueda, historial reciente y destinos frecuentes
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../data/models/trip_model.dart';
 import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/trips_service.dart';
@@ -50,6 +52,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // Key para refrescar el banner de ubicación
   final GlobalKey<State> _locationBannerKey = GlobalKey();
 
+  // Flag para evitar doble redirect
+  bool _hasCheckedActiveTrip = false;
+
   @override
   void initState() {
     super.initState();
@@ -74,12 +79,156 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_activeRole == 'conductor') {
       _loadDriverTrips();
     }
+
+    // Auto-detectar viaje activo (conductor o pasajero) al abrir la app
+    _checkAndRedirectActiveTrip();
   }
 
   void _loadDriverTrips() {
     context.read<TripBloc>().add(
       LoadDriverTripsEvent(driverId: widget.userId),
     );
+  }
+
+  /// Pull-to-refresh para pasajero: recarga estado de ubicación y UI
+  Future<void> _refreshPassengerHome() async {
+    setState(() {});
+    // Pequeño delay para feedback visual del refresh indicator
+    await Future.delayed(const Duration(milliseconds: 500));
+  }
+
+  /// Pull-to-refresh para conductor: recarga lista de viajes
+  Future<void> _refreshDriverHome() async {
+    _loadDriverTrips();
+    // Pequeño delay para feedback visual del refresh indicator
+    await Future.delayed(const Duration(milliseconds: 500));
+  }
+
+  /// Verifica si el usuario tiene un viaje activo (conductor o pasajero)
+  /// y redirige automáticamente a la pantalla correspondiente.
+  /// Se ejecuta al abrir la app para retomar el flujo interrumpido.
+  Future<void> _checkAndRedirectActiveTrip() async {
+    if (_hasCheckedActiveTrip) return;
+    _hasCheckedActiveTrip = true;
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      // === CONDUCTOR: Buscar viajes activos como conductor ===
+      if (widget.hasVehicle) {
+        // Query 1: Buscar viaje in_progress (conductor ya manejando)
+        final inProgressSnap = await firestore
+            .collection('trips')
+            .where('driverId', isEqualTo: widget.userId)
+            .where('status', isEqualTo: 'in_progress')
+            .limit(1)
+            .get();
+
+        if (!mounted) return;
+
+        if (inProgressSnap.docs.isNotEmpty) {
+          final tripId = inProgressSnap.docs.first.id;
+          debugPrint('🔄 Auto-redirect conductor: in_progress → GPS ($tripId)');
+          context.go('/driver/active-trip/$tripId');
+          return;
+        }
+
+        // Query 2: Buscar viaje active (recibiendo solicitudes)
+        final activeSnap = await firestore
+            .collection('trips')
+            .where('driverId', isEqualTo: widget.userId)
+            .where('status', isEqualTo: 'active')
+            .limit(1)
+            .get();
+
+        if (!mounted) return;
+
+        if (activeSnap.docs.isNotEmpty) {
+          final tripId = activeSnap.docs.first.id;
+          debugPrint('🔄 Auto-redirect conductor: active → solicitudes ($tripId)');
+          context.go('/driver/active-requests/$tripId');
+          return;
+        }
+      }
+
+      // === PASAJERO: Buscar solicitudes activas como pasajero ===
+      // Query 3: Buscar ride_request con status 'accepted' (pasajero aceptado por un conductor)
+      final acceptedReqSnap = await firestore
+          .collection('ride_requests')
+          .where('passengerId', isEqualTo: widget.userId)
+          .where('status', isEqualTo: 'accepted')
+          .limit(1)
+          .get();
+
+      if (!mounted) return;
+
+      if (acceptedReqSnap.docs.isNotEmpty) {
+        final reqDoc = acceptedReqSnap.docs.first;
+        final reqData = reqDoc.data();
+        final tripId = reqData['tripId'] as String?;
+        if (tripId != null && tripId.isNotEmpty) {
+          // Obtener datos del viaje para la pantalla de tracking
+          final tripDoc = await firestore.collection('trips').doc(tripId).get();
+          if (tripDoc.exists && mounted) {
+            final tripData = tripDoc.data()!;
+            final tripStatus = tripData['status'] as String? ?? '';
+
+            // Si el viaje fue cancelado o completado, limpiar la solicitud y NO redirigir
+            if (tripStatus == 'cancelled' || tripStatus == 'completed') {
+              debugPrint('🔄 Auto-redirect pasajero: viaje $tripStatus — limpiando ride_request');
+              await reqDoc.reference.update({'status': tripStatus == 'cancelled' ? 'cancelled' : 'completed'});
+
+              // Si fue cancelado, ir directo a pantalla de reseñas
+              if (tripStatus == 'cancelled' && mounted) {
+                final driverId = tripData['driverId'] as String? ?? '';
+                context.go('/trip/rate', extra: {
+                  'tripId': tripId,
+                  'passengerId': widget.userId,
+                  'driverId': driverId,
+                  'ratingContext': 'cancelled',
+                });
+                return;
+              }
+              // Si fue completado, seguir al home normal
+            } else {
+              final destination = tripData['destination'] as Map<String, dynamic>?;
+              final pickupPoint = reqData['pickupPoint'] as Map<String, dynamic>?;
+
+              if (destination != null && pickupPoint != null) {
+                debugPrint('🔄 Auto-redirect pasajero: accepted → tracking ($tripId)');
+                context.go('/trip/tracking', extra: {
+                  'tripId': tripId,
+                  'userId': widget.userId,
+                  'pickupPoint': TripLocation.fromJson(pickupPoint),
+                  'destination': TripLocation.fromJson(destination),
+                });
+                return;
+              }
+            }
+          }
+        }
+      }
+
+      // Query 4: Buscar ride_request con status 'searching' (pasajero esperando)
+      final searchingReqSnap = await firestore
+          .collection('ride_requests')
+          .where('passengerId', isEqualTo: widget.userId)
+          .where('status', isEqualTo: 'searching')
+          .limit(1)
+          .get();
+
+      if (!mounted) return;
+
+      if (searchingReqSnap.docs.isNotEmpty) {
+        debugPrint('🔄 Auto-redirect pasajero: searching → pantalla principal (aún buscando)');
+        // No redirigir al waiting screen porque necesita datos extra que no tenemos aquí
+        // El pasajero verá la home y podrá buscar de nuevo
+      }
+
+      debugPrint('🔄 Auto-redirect: no hay viajes activos');
+    } catch (e) {
+      debugPrint('❌ Error checking active trip: $e');
+    }
   }
 
   /// Maneja el tap en "Viaje Instantáneo"
@@ -235,12 +384,16 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildPassengerHome() {
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Banner de ubicación desactivada (estilo Uber)
-          LocationPermissionBanner(
+    return RefreshIndicator(
+      onRefresh: _refreshPassengerHome,
+      color: AppColors.primary,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Banner de ubicación desactivada (estilo Uber)
+            LocationPermissionBanner(
             key: _locationBannerKey,
             onPermissionGranted: () {
               // Refrescar la pantalla cuando se otorga el permiso
@@ -339,19 +492,24 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-          const SizedBox(height: 40),
-        ],
+            const SizedBox(height: 40),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildDriverHome() {
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header con logo y avatar
-          _buildHeader(),
+    return RefreshIndicator(
+      onRefresh: _refreshDriverHome,
+      color: AppColors.primary,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header con logo y avatar
+            _buildHeader(),
 
           const SizedBox(height: 16),
 
@@ -462,11 +620,15 @@ class _HomeScreenState extends State<HomeScreen> {
                             return UpcomingTripCard(
                               trip: trip,
                               onTap: () {
-                                // Viajes activos (instantáneos) van a pantalla de viaje activo
-                                // Viajes programados van al detalle normal
-                                if (trip.isActive) {
-                                  context.push(
+                                if (trip.isInProgress) {
+                                  // Viaje en progreso → GPS screen
+                                  context.go(
                                     '/driver/active-trip/${trip.tripId}',
+                                  );
+                                } else if (trip.isActive) {
+                                  // Buscando pasajeros → pantalla de solicitudes
+                                  context.go(
+                                    '/driver/active-requests/${trip.tripId}',
                                   );
                                 } else {
                                   context.push(
@@ -553,8 +715,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          const SizedBox(height: 40),
-        ],
+            const SizedBox(height: 40),
+          ],
+        ),
       ),
     );
   }

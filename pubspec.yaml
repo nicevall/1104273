@@ -52,6 +52,10 @@ dependencies:
   widget_to_marker: ^1.0.6
   flutter_dotenv: ^6.0.0
 
+  # Text-to-Speech (navegación GPS por voz)
+  flutter_tts: ^4.0.2
+  flutter_compass: ^0.8.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

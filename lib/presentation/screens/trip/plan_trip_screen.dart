@@ -611,6 +611,10 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           const SizedBox(height: 8),
           // Opción: Elegir en el mapa
           _buildMapPickerOption(),
+
+          // Ubicación predeterminada: UIDE Loja
+          _buildUideShortcut(),
+
           const Divider(height: 1, indent: 20, endIndent: 20),
 
           // Búsquedas recientes
@@ -788,6 +792,63 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
         _navigateToMapWithDetails(destination);
       }
     });
+  }
+
+  Widget _buildUideShortcut() {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      leading: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: AppColors.primary.withOpacity(0.1),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          Icons.school,
+          color: AppColors.primary,
+          size: 24,
+        ),
+      ),
+      title: Text(
+        'UIDE Loja',
+        style: AppTextStyles.body1.copyWith(fontWeight: FontWeight.w500),
+      ),
+      subtitle: Text(
+        'Universidad Internacional del Ecuador - Loja',
+        style: AppTextStyles.caption.copyWith(color: AppColors.textSecondary),
+      ),
+      trailing: Icon(
+        Icons.chevron_right,
+        color: AppColors.textSecondary,
+      ),
+      onTap: _onUideSelected,
+    );
+  }
+
+  void _onUideSelected() {
+    // Verificar que el origen esté detectado
+    if (_isLoadingLocation || _originLatitude == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Espera a que se detecte tu ubicación'),
+          backgroundColor: AppColors.warning,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    // Coordenadas de la UIDE Loja (verificadas en mapa)
+    final destination = PlaceDetails(
+      placeId: 'uide_loja_predefined',
+      name: 'UIDE Loja',
+      address: 'Universidad Internacional del Ecuador, Agustín Carrión Palacios, Loja, Ecuador',
+      latitude: -3.97245,
+      longitude: -79.19933,
+    );
+
+    _navigateToMapWithDetails(destination);
   }
 
   Widget _buildSuggestionsList() {

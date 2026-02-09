@@ -59,7 +59,7 @@ class TripPassenger extends Equatable {
   final String userId;
   final String status; // 'pending', 'accepted', 'rejected', 'picked_up', 'dropped_off'
   final TripLocation? pickupPoint;
-  final double price;
+  final double price; // Precio final congelado al hacer drop-off (price = meterFare)
   final String paymentStatus; // 'pending', 'paid'
   final String paymentMethod; // 'Efectivo', 'Transferencia'
   final List<String> preferences; // ['mochila', 'objeto_grande', 'mascota']
@@ -70,6 +70,19 @@ class TripPassenger extends Equatable {
   final String? petDescription; // Descripción de la mascota (para 'otro')
   final String? rejectionReason;
   final DateTime requestedAt;
+
+  // === Campos del taxímetro ===
+  final DateTime? pickedUpAt; // Momento que subió al carro
+  final double? pickupLatitude; // GPS lat al momento del pickup
+  final double? pickupLongitude; // GPS lng al momento del pickup
+  final DateTime? droppedOffAt; // Momento que se bajó
+  final double? dropoffLatitude; // GPS lat al bajar
+  final double? dropoffLongitude; // GPS lng al bajar
+  final double? meterDistanceKm; // Km acumulados por GPS
+  final double? meterWaitMinutes; // Minutos de espera (velocidad < 5 km/h)
+  final double? meterFare; // Tarifa actual del taxímetro (fuente de verdad)
+  final bool? isNightTariff; // Tarifa fijada al pickup (no cambia durante viaje)
+  final DateTime? meterLastUpdated; // Última sincronización a Firestore
 
   const TripPassenger({
     required this.userId,
@@ -86,6 +99,18 @@ class TripPassenger extends Equatable {
     this.petDescription,
     this.rejectionReason,
     required this.requestedAt,
+    // Taxímetro
+    this.pickedUpAt,
+    this.pickupLatitude,
+    this.pickupLongitude,
+    this.droppedOffAt,
+    this.dropoffLatitude,
+    this.dropoffLongitude,
+    this.meterDistanceKm,
+    this.meterWaitMinutes,
+    this.meterFare,
+    this.isNightTariff,
+    this.meterLastUpdated,
   });
 
   /// Si el pasajero lleva mascota
@@ -143,6 +168,30 @@ class TripPassenger extends Equatable {
       requestedAt: json['requestedAt'] is Timestamp
           ? (json['requestedAt'] as Timestamp).toDate()
           : DateTime.parse(json['requestedAt'] as String),
+      // Taxímetro
+      pickedUpAt: json['pickedUpAt'] != null
+          ? (json['pickedUpAt'] is Timestamp
+              ? (json['pickedUpAt'] as Timestamp).toDate()
+              : DateTime.parse(json['pickedUpAt'] as String))
+          : null,
+      pickupLatitude: (json['pickupLatitude'] as num?)?.toDouble(),
+      pickupLongitude: (json['pickupLongitude'] as num?)?.toDouble(),
+      droppedOffAt: json['droppedOffAt'] != null
+          ? (json['droppedOffAt'] is Timestamp
+              ? (json['droppedOffAt'] as Timestamp).toDate()
+              : DateTime.parse(json['droppedOffAt'] as String))
+          : null,
+      dropoffLatitude: (json['dropoffLatitude'] as num?)?.toDouble(),
+      dropoffLongitude: (json['dropoffLongitude'] as num?)?.toDouble(),
+      meterDistanceKm: (json['meterDistanceKm'] as num?)?.toDouble(),
+      meterWaitMinutes: (json['meterWaitMinutes'] as num?)?.toDouble(),
+      meterFare: (json['meterFare'] as num?)?.toDouble(),
+      isNightTariff: json['isNightTariff'] as bool?,
+      meterLastUpdated: json['meterLastUpdated'] != null
+          ? (json['meterLastUpdated'] is Timestamp
+              ? (json['meterLastUpdated'] as Timestamp).toDate()
+              : DateTime.parse(json['meterLastUpdated'] as String))
+          : null,
     );
   }
 
@@ -162,6 +211,18 @@ class TripPassenger extends Equatable {
       'petDescription': petDescription,
       'rejectionReason': rejectionReason,
       'requestedAt': Timestamp.fromDate(requestedAt),
+      // Taxímetro
+      if (pickedUpAt != null) 'pickedUpAt': Timestamp.fromDate(pickedUpAt!),
+      if (pickupLatitude != null) 'pickupLatitude': pickupLatitude,
+      if (pickupLongitude != null) 'pickupLongitude': pickupLongitude,
+      if (droppedOffAt != null) 'droppedOffAt': Timestamp.fromDate(droppedOffAt!),
+      if (dropoffLatitude != null) 'dropoffLatitude': dropoffLatitude,
+      if (dropoffLongitude != null) 'dropoffLongitude': dropoffLongitude,
+      if (meterDistanceKm != null) 'meterDistanceKm': meterDistanceKm,
+      if (meterWaitMinutes != null) 'meterWaitMinutes': meterWaitMinutes,
+      if (meterFare != null) 'meterFare': meterFare,
+      if (isNightTariff != null) 'isNightTariff': isNightTariff,
+      if (meterLastUpdated != null) 'meterLastUpdated': Timestamp.fromDate(meterLastUpdated!),
     };
   }
 
@@ -180,6 +241,17 @@ class TripPassenger extends Equatable {
     String? petDescription,
     String? rejectionReason,
     DateTime? requestedAt,
+    DateTime? pickedUpAt,
+    double? pickupLatitude,
+    double? pickupLongitude,
+    DateTime? droppedOffAt,
+    double? dropoffLatitude,
+    double? dropoffLongitude,
+    double? meterDistanceKm,
+    double? meterWaitMinutes,
+    double? meterFare,
+    bool? isNightTariff,
+    DateTime? meterLastUpdated,
   }) {
     return TripPassenger(
       userId: userId ?? this.userId,
@@ -196,6 +268,17 @@ class TripPassenger extends Equatable {
       petDescription: petDescription ?? this.petDescription,
       rejectionReason: rejectionReason ?? this.rejectionReason,
       requestedAt: requestedAt ?? this.requestedAt,
+      pickedUpAt: pickedUpAt ?? this.pickedUpAt,
+      pickupLatitude: pickupLatitude ?? this.pickupLatitude,
+      pickupLongitude: pickupLongitude ?? this.pickupLongitude,
+      droppedOffAt: droppedOffAt ?? this.droppedOffAt,
+      dropoffLatitude: dropoffLatitude ?? this.dropoffLatitude,
+      dropoffLongitude: dropoffLongitude ?? this.dropoffLongitude,
+      meterDistanceKm: meterDistanceKm ?? this.meterDistanceKm,
+      meterWaitMinutes: meterWaitMinutes ?? this.meterWaitMinutes,
+      meterFare: meterFare ?? this.meterFare,
+      isNightTariff: isNightTariff ?? this.isNightTariff,
+      meterLastUpdated: meterLastUpdated ?? this.meterLastUpdated,
     );
   }
 
@@ -215,6 +298,17 @@ class TripPassenger extends Equatable {
         petDescription,
         rejectionReason,
         requestedAt,
+        pickedUpAt,
+        pickupLatitude,
+        pickupLongitude,
+        droppedOffAt,
+        dropoffLatitude,
+        dropoffLongitude,
+        meterDistanceKm,
+        meterWaitMinutes,
+        meterFare,
+        isNightTariff,
+        meterLastUpdated,
       ];
 }
 
@@ -238,9 +332,10 @@ class TripModel extends Equatable {
   final DateTime? estimatedArrival;
   final List<int>? recurringDays; // [1,2,3,4,5] = Lun-Vie (1=Lun, 7=Dom)
 
-  // Precio (Fase 2: precio maximo manual; Fase 3: formula inteligente)
-  final double pricePerPassenger; // USD - precio maximo individual
+  // Precio
+  final double pricePerPassenger; // USD - legacy (0.0 cuando usa taxímetro)
   final String currency;
+  final bool useTaximeter; // true = taxímetro en tiempo real, false = precio fijo legacy
 
   // Capacidad
   final int totalCapacity; // 1-4
@@ -255,6 +350,12 @@ class TripModel extends Equatable {
   final String chatLevel; // 'silencioso', 'moderado', 'hablador'
   final int? maxWaitMinutes; // Tiempo de espera máximo en minutos
   final String? additionalNotes; // Notas adicionales (max 150 chars)
+  final DateTime? waitingStartedAt; // Timestamp cuando el conductor inicia timer de espera
+
+  // Ubicación en tiempo real del conductor (para tracking del pasajero)
+  final double? driverLatitude;
+  final double? driverLongitude;
+  final DateTime? driverLocationUpdatedAt;
 
   // Timestamps
   final DateTime createdAt;
@@ -277,6 +378,7 @@ class TripModel extends Equatable {
     this.recurringDays,
     required this.pricePerPassenger,
     this.currency = 'USD',
+    this.useTaximeter = true,
     required this.totalCapacity,
     required this.availableSeats,
     this.passengers = const [],
@@ -285,6 +387,10 @@ class TripModel extends Equatable {
     this.chatLevel = 'flexible',
     this.maxWaitMinutes,
     this.additionalNotes,
+    this.waitingStartedAt,
+    this.driverLatitude,
+    this.driverLongitude,
+    this.driverLocationUpdatedAt,
     required this.createdAt,
     this.startedAt,
     this.completedAt,
@@ -309,8 +415,11 @@ class TripModel extends Equatable {
   /// Si el viaje esta lleno
   bool get isFull => availableSeats <= 0;
 
-  /// Si el viaje esta activo
+  /// Si el viaje esta activo (buscando pasajeros)
   bool get isActive => status == 'active';
+
+  /// Si el viaje está en progreso (conductor conduciendo)
+  bool get isInProgress => status == 'in_progress';
 
   /// Si el viaje esta programado
   bool get isScheduled => status == 'scheduled';
@@ -323,6 +432,13 @@ class TripModel extends Equatable {
 
   /// Si es viaje recurrente
   bool get isRecurring => recurringDays != null && recurringDays!.isNotEmpty;
+
+  /// Si tiene ubicación reciente del conductor (menos de 30 segundos)
+  bool get hasRecentDriverLocation {
+    if (driverLatitude == null || driverLongitude == null) return false;
+    if (driverLocationUpdatedAt == null) return false;
+    return DateTime.now().difference(driverLocationUpdatedAt!).inSeconds < 30;
+  }
 
   /// Descripcion corta de la ruta
   String get routeDescription => '${origin.name} → ${destination.name}';
@@ -360,6 +476,7 @@ class TripModel extends Equatable {
       pricePerPassenger:
           (json['pricePerPassenger'] as num?)?.toDouble() ?? 0.0,
       currency: json['currency'] as String? ?? 'USD',
+      useTaximeter: json['useTaximeter'] as bool? ?? true,
       totalCapacity: json['totalCapacity'] as int? ?? 4,
       availableSeats: json['availableSeats'] as int? ?? 4,
       passengers: (json['passengers'] as List<dynamic>?)
@@ -372,6 +489,18 @@ class TripModel extends Equatable {
       chatLevel: json['chatLevel'] as String? ?? 'flexible',
       maxWaitMinutes: json['maxWaitMinutes'] as int?,
       additionalNotes: json['additionalNotes'] as String?,
+      waitingStartedAt: json['waitingStartedAt'] != null
+          ? (json['waitingStartedAt'] is Timestamp
+              ? (json['waitingStartedAt'] as Timestamp).toDate()
+              : DateTime.parse(json['waitingStartedAt'] as String))
+          : null,
+      driverLatitude: (json['driverLatitude'] as num?)?.toDouble(),
+      driverLongitude: (json['driverLongitude'] as num?)?.toDouble(),
+      driverLocationUpdatedAt: json['driverLocationUpdatedAt'] != null
+          ? (json['driverLocationUpdatedAt'] is Timestamp
+              ? (json['driverLocationUpdatedAt'] as Timestamp).toDate()
+              : DateTime.parse(json['driverLocationUpdatedAt'] as String))
+          : null,
       createdAt: json['createdAt'] is Timestamp
           ? (json['createdAt'] as Timestamp).toDate()
           : DateTime.parse(json['createdAt'] as String),
@@ -407,6 +536,7 @@ class TripModel extends Equatable {
       'recurringDays': recurringDays,
       'pricePerPassenger': pricePerPassenger,
       'currency': currency,
+      'useTaximeter': useTaximeter,
       'totalCapacity': totalCapacity,
       'availableSeats': availableSeats,
       'passengers': passengers.map((p) => p.toJson()).toList(),
@@ -415,6 +545,14 @@ class TripModel extends Equatable {
       'chatLevel': chatLevel,
       'maxWaitMinutes': maxWaitMinutes,
       'additionalNotes': additionalNotes,
+      'waitingStartedAt': waitingStartedAt != null
+          ? Timestamp.fromDate(waitingStartedAt!)
+          : null,
+      'driverLatitude': driverLatitude,
+      'driverLongitude': driverLongitude,
+      'driverLocationUpdatedAt': driverLocationUpdatedAt != null
+          ? Timestamp.fromDate(driverLocationUpdatedAt!)
+          : null,
       'createdAt': Timestamp.fromDate(createdAt),
       'startedAt':
           startedAt != null ? Timestamp.fromDate(startedAt!) : null,
@@ -444,6 +582,7 @@ class TripModel extends Equatable {
     List<int>? recurringDays,
     double? pricePerPassenger,
     String? currency,
+    bool? useTaximeter,
     int? totalCapacity,
     int? availableSeats,
     List<TripPassenger>? passengers,
@@ -452,6 +591,10 @@ class TripModel extends Equatable {
     String? chatLevel,
     int? maxWaitMinutes,
     String? additionalNotes,
+    DateTime? waitingStartedAt,
+    double? driverLatitude,
+    double? driverLongitude,
+    DateTime? driverLocationUpdatedAt,
     DateTime? createdAt,
     DateTime? startedAt,
     DateTime? completedAt,
@@ -472,6 +615,7 @@ class TripModel extends Equatable {
       recurringDays: recurringDays ?? this.recurringDays,
       pricePerPassenger: pricePerPassenger ?? this.pricePerPassenger,
       currency: currency ?? this.currency,
+      useTaximeter: useTaximeter ?? this.useTaximeter,
       totalCapacity: totalCapacity ?? this.totalCapacity,
       availableSeats: availableSeats ?? this.availableSeats,
       passengers: passengers ?? this.passengers,
@@ -480,6 +624,10 @@ class TripModel extends Equatable {
       chatLevel: chatLevel ?? this.chatLevel,
       maxWaitMinutes: maxWaitMinutes ?? this.maxWaitMinutes,
       additionalNotes: additionalNotes ?? this.additionalNotes,
+      waitingStartedAt: waitingStartedAt ?? this.waitingStartedAt,
+      driverLatitude: driverLatitude ?? this.driverLatitude,
+      driverLongitude: driverLongitude ?? this.driverLongitude,
+      driverLocationUpdatedAt: driverLocationUpdatedAt ?? this.driverLocationUpdatedAt,
       createdAt: createdAt ?? this.createdAt,
       startedAt: startedAt ?? this.startedAt,
       completedAt: completedAt ?? this.completedAt,
@@ -503,6 +651,7 @@ class TripModel extends Equatable {
         recurringDays,
         pricePerPassenger,
         currency,
+        useTaximeter,
         totalCapacity,
         availableSeats,
         passengers,
@@ -511,6 +660,10 @@ class TripModel extends Equatable {
         chatLevel,
         maxWaitMinutes,
         additionalNotes,
+        waitingStartedAt,
+        driverLatitude,
+        driverLongitude,
+        driverLocationUpdatedAt,
         createdAt,
         startedAt,
         completedAt,

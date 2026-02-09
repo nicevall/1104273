@@ -17,6 +17,8 @@ import '../../../data/models/trip_model.dart';
 import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/google_places_service.dart';
+import '../../../data/services/google_directions_service.dart';
+import '../../../data/services/pricing_service.dart';
 import '../../blocs/trip/trip_bloc.dart';
 import '../../blocs/trip/trip_event.dart';
 import '../../blocs/trip/trip_state.dart';
@@ -57,9 +59,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   // === Capacidad y Precio (Step 2) ===
   int _capacity = 3;
   int _maxCapacity = 4;
-  bool _useSmartPricing = true;
-  double _smartPrice = 1.50;
-  double _manualPrice = 1.50;
+  final _directionsService = GoogleDirectionsService();
+  final _pricingService = PricingService();
+  FareResult? _fareResult;
+  bool _isCalculatingFare = false;
 
   // === Preferencias (Step 3) ===
   bool _allowsLuggage = true;
@@ -275,8 +278,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
         );
         return departureTime.isAfter(DateTime.now());
       case 1: // Capacidad y Precio
-        if (_useSmartPricing) return true;
-        return _manualPrice > 0;
+        return _fareResult != null;
       case 2: // Preferencias
         return true;
       case 3: // Confirmacion
@@ -310,6 +312,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
 
     if (picked != null) {
       setState(() => _selectedTime = picked);
+      // Recalculate fare since day/night rate depends on departure time
+      if (_fareResult != null) {
+        _calculateFare();
+      }
     }
   }
 
@@ -492,6 +498,52 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   }
 
   // ============================================================
+  // FARE CALCULATION
+  // ============================================================
+
+  Future<void> _calculateFare() async {
+    if (_origin == null || _destination == null) return;
+
+    setState(() => _isCalculatingFare = true);
+
+    try {
+      final routeInfo = await _directionsService.getRoute(
+        originLat: _origin!.latitude,
+        originLng: _origin!.longitude,
+        destLat: _destination!.latitude,
+        destLng: _destination!.longitude,
+      );
+
+      if (routeInfo != null && mounted) {
+        // Para viajes programados, calcular usando la hora de salida programada
+        final departureTime = DateTime(
+          _selectedDate.year,
+          _selectedDate.month,
+          _selectedDate.day,
+          _selectedTime.hour,
+          _selectedTime.minute,
+        );
+
+        final fare = _pricingService.calculateFromMeters(
+          distanceMeters: routeInfo.distanceMeters,
+          durationSeconds: routeInfo.durationSeconds,
+          departureTime: departureTime,
+        );
+        setState(() {
+          _fareResult = fare;
+          _isCalculatingFare = false;
+        });
+      } else if (mounted) {
+        setState(() => _isCalculatingFare = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isCalculatingFare = false);
+      }
+    }
+  }
+
+  // ============================================================
   // PUBLISH TRIP
   // ============================================================
 
@@ -509,7 +561,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       return;
     }
 
-    final price = _useSmartPricing ? _smartPrice : _manualPrice;
+    if (_fareResult == null) {
+      _showError('Calculando tarifa, espera un momento...');
+      return;
+    }
 
     final departureTime = DateTime(
       _selectedDate.year,
@@ -535,7 +590,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
       recurringDays: _isRecurring && _recurringDays.isNotEmpty
           ? _recurringDays
           : null,
-      pricePerPassenger: price,
+      pricePerPassenger: 0.0,
+      useTaximeter: true,
+      distanceKm: _fareResult!.distanceKm,
+      durationMinutes: _fareResult!.durationMinutes,
       totalCapacity: _capacity,
       availableSeats: _capacity,
       allowsLuggage: _allowsLuggage,
@@ -693,7 +751,10 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             height: AppDimensions.buttonHeightLarge,
             child: ElevatedButton(
               onPressed: (_origin != null && _destination != null)
-                  ? () => setState(() => _routeConfirmed = true)
+                  ? () {
+                      setState(() => _routeConfirmed = true);
+                      _calculateFare();
+                    }
                   : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
@@ -835,13 +896,13 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   Widget _buildStepHeader() {
     final titles = [
       'Fecha y Hora',
-      'Capacidad y Precio',
+      'Capacidad',
       'Preferencias',
       'Confirmaci\u00f3n',
     ];
     final subtitles = [
       'Selecciona cu\u00e1ndo sales',
-      'Define asientos y precio',
+      'Define los asientos disponibles',
       'Configura tu viaje',
       'Revisa y publica',
     ];
@@ -1116,274 +1177,7 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
             ),
           ),
 
-          const SizedBox(height: 28),
-
-          // Pricing
-          _buildSectionHeader(
-              'Precio por pasajero', Icons.attach_money),
-          const SizedBox(height: 12),
-
-          // Smart pricing card
-          _buildPricingCard(
-            title: 'Precio Inteligente',
-            subtitle:
-                'Calculado en base a la distancia y hora',
-            price: _smartPrice,
-            isSelected: _useSmartPricing,
-            isRecommended: true,
-            onTap: () =>
-                setState(() => _useSmartPricing = true),
-          ),
-
-          const SizedBox(height: 12),
-
-          // Manual pricing card
-          _buildManualPricingCard(),
         ],
-      ),
-    );
-  }
-
-  Widget _buildPricingCard({
-    required String title,
-    required String subtitle,
-    required double price,
-    required bool isSelected,
-    required VoidCallback onTap,
-    bool isRecommended = false,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.primary.withOpacity(0.05)
-              : AppColors.inputFill,
-          borderRadius:
-              BorderRadius.circular(AppDimensions.radiusM),
-          border: Border.all(
-            color: isSelected
-                ? AppColors.primary
-                : AppColors.inputBorder,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            // Radio indicator
-            Container(
-              width: 24,
-              height: 24,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isSelected
-                      ? AppColors.primary
-                      : AppColors.disabled,
-                  width: 2,
-                ),
-              ),
-              child: isSelected
-                  ? Center(
-                      child: Container(
-                        width: 12,
-                        height: 12,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.primary,
-                        ),
-                      ),
-                    )
-                  : null,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        title,
-                        style: AppTextStyles.body2.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: isSelected
-                              ? AppColors.textPrimary
-                              : AppColors.textSecondary,
-                        ),
-                      ),
-                      if (isRecommended) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: AppColors.success
-                                .withOpacity(0.15),
-                            borderRadius:
-                                BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            'Recomendado',
-                            style:
-                                AppTextStyles.caption.copyWith(
-                              fontSize: 10,
-                              color: AppColors.success,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: AppTextStyles.caption.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Text(
-              '\$${price.toStringAsFixed(2)}',
-              style: AppTextStyles.h3.copyWith(
-                fontWeight: FontWeight.w700,
-                color: isSelected
-                    ? AppColors.primary
-                    : AppColors.textSecondary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildManualPricingCard() {
-    final isSelected = !_useSmartPricing;
-    return GestureDetector(
-      onTap: () => setState(() => _useSmartPricing = false),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.primary.withOpacity(0.05)
-              : AppColors.inputFill,
-          borderRadius:
-              BorderRadius.circular(AppDimensions.radiusM),
-          border: Border.all(
-            color: isSelected
-                ? AppColors.primary
-                : AppColors.inputBorder,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                // Radio indicator
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: isSelected
-                          ? AppColors.primary
-                          : AppColors.disabled,
-                      width: 2,
-                    ),
-                  ),
-                  child: isSelected
-                      ? Center(
-                          child: Container(
-                            width: 12,
-                            height: 12,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                        )
-                      : null,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Precio Manual',
-                        style: AppTextStyles.body2.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: isSelected
-                              ? AppColors.textPrimary
-                              : AppColors.textSecondary,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Establece tu propio precio',
-                        style:
-                            AppTextStyles.caption.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            if (isSelected) ...[
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _buildStepperButton(
-                    icon: Icons.remove,
-                    enabled: _manualPrice > 0.25,
-                    onTap: () {
-                      if (_manualPrice > 0.25) {
-                        setState(() => _manualPrice =
-                            double.parse(
-                                (_manualPrice - 0.25)
-                                    .toStringAsFixed(2)));
-                      }
-                    },
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 24),
-                    child: Text(
-                      '\$${_manualPrice.toStringAsFixed(2)}',
-                      style: AppTextStyles.h2.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.primary,
-                      ),
-                    ),
-                  ),
-                  _buildStepperButton(
-                    icon: Icons.add,
-                    enabled: _manualPrice < 10.00,
-                    onTap: () {
-                      if (_manualPrice < 10.00) {
-                        setState(() => _manualPrice =
-                            double.parse(
-                                (_manualPrice + 0.25)
-                                    .toStringAsFixed(2)));
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
       ),
     );
   }
@@ -1577,8 +1371,6 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
   // ============================================================
 
   Widget _buildStep4Confirmation() {
-    final price =
-        _useSmartPricing ? _smartPrice : _manualPrice;
     final departureTime = DateTime(
       _selectedDate.year,
       _selectedDate.month,
@@ -1726,12 +1518,14 @@ class _CreateTripScreenState extends State<CreateTripScreen> {
                   'Asientos',
                   '$_capacity pasajeros',
                 ),
-                const SizedBox(height: 8),
-                _buildSummaryRow(
-                  Icons.attach_money,
-                  'Precio',
-                  '\$${price.toStringAsFixed(2)} por pasajero${_useSmartPricing ? ' (inteligente)' : ''}',
-                ),
+                if (_fareResult != null) ...[
+                  const SizedBox(height: 8),
+                  _buildSummaryRow(
+                    Icons.straighten,
+                    'Distancia',
+                    '${_fareResult!.distanceKm.toStringAsFixed(1)} km · ~${_fareResult!.durationMinutes} min',
+                  ),
+                ],
 
                 if (_vehicle != null) ...[
                   const SizedBox(height: 8),

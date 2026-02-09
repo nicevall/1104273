@@ -16,6 +16,7 @@ class FirestoreService {
   /// Retorna [UserModel] si existe, null si no
   /// Lanza [FirebaseException] si hay error
   Future<UserModel?> getUser(String userId) async {
+    if (userId.isEmpty) return null;
     try {
       final doc = await _firestore
           .collection(_usersCollection)
@@ -104,6 +105,7 @@ class FirestoreService {
   /// Busca vehículo donde ownerId == userId
   /// Retorna null si el usuario no tiene vehículo registrado
   Future<VehicleModel?> getUserVehicle(String userId) async {
+    if (userId.isEmpty) return null;
     try {
       final querySnapshot = await _firestore
           .collection(_vehiclesCollection)

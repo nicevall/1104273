@@ -37,6 +37,9 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
   // Preferencias del viaje
   String _selectedPreference = 'mochila';
   String _preferenceDescription = '';
+  String? _petType;
+  String? _petSize;
+  String? _petDescription;
   String _paymentMethod = 'Efectivo';
 
   // Markers (sin polyline para no confundir con ruta real)
@@ -357,6 +360,9 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
         setState(() {
           _selectedPreference = result['preference'] ?? 'mochila';
           _preferenceDescription = result['description'] ?? '';
+          _petType = result['petType'] as String?;
+          _petSize = result['petSize'] as String?;
+          _petDescription = result['petDescription'] as String?;
         });
       }
     });
@@ -380,6 +386,9 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
       'destination': widget.destination,
       'preference': _selectedPreference,
       'preferenceDescription': _preferenceDescription,
+      'petType': _petType,
+      'petSize': _petSize,
+      'petDescription': _petDescription,
       'paymentMethod': _paymentMethod,
     });
   }
@@ -767,6 +776,7 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
       onTap: _onPaymentMethodTap,
     );
   }
+
 }
 
 /// Línea punteada estática

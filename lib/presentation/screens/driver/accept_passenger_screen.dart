@@ -2,6 +2,7 @@
 // Pantalla para que el conductor vea y acepte una solicitud de pasajero
 // Muestra mapa con desvío, info del pasajero, botones aceptar/rechazar
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -130,22 +131,47 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Confirmar'),
         content: Text(
-          '¿Aceptar a ${_passengerUser?.firstName ?? "este pasajero"} en tu viaje?\n\nPrecio: \$${_trip!.pricePerPassenger.toStringAsFixed(2)}',
+          '¿Aceptar a ${_passengerUser?.firstName ?? "este pasajero"} en tu viaje?',
         ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.success,
-            ),
-            child: const Text('Aceptar'),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Cancelar'),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Aceptar'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -161,7 +187,7 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
         requestId: widget.requestId,
         driverId: _trip!.driverId,
         tripId: widget.tripId,
-        agreedPrice: _trip!.pricePerPassenger,
+        agreedPrice: 0.0,
       );
 
       // 2. Agregar el pasajero al viaje (como TripPassenger)
@@ -169,7 +195,7 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
         userId: _request!.passengerId,
         status: 'accepted',
         pickupPoint: _request!.pickupPoint,
-        price: _trip!.pricePerPassenger,
+        price: 0.0,
         paymentMethod: _request!.paymentMethod,
         preferences: _request!.preferences,
         referenceNote: _request!.referenceNote,
@@ -182,11 +208,13 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
 
       await _tripsService.requestToJoin(widget.tripId, passenger);
 
-      // 3. Actualizar asientos disponibles
-      final updatedTrip = _trip!.copyWith(
-        availableSeats: _trip!.availableSeats - 1,
-      );
-      await _tripsService.updateTrip(updatedTrip);
+      // 3. Actualizar SOLO asientos disponibles (sin sobrescribir passengers)
+      await FirebaseFirestore.instance
+          .collection('trips')
+          .doc(widget.tripId)
+          .update({
+        'availableSeats': FieldValue.increment(-1),
+      });
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -197,7 +225,8 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
             backgroundColor: AppColors.success,
           ),
         );
-        context.pop();
+        // Devolver el passengerId para que la pantalla padre lo sepa de inmediato
+        context.pop(_request!.passengerId);
       }
     } catch (e) {
       if (mounted) {
@@ -365,13 +394,17 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
       );
     }
 
-    // Calcular bounds
-    final bounds = _calculateBounds(markers);
+    // Calcular bounds enfocados en la zona del desvío (pickup del pasajero)
+    // En vez de mostrar todo el viaje, enfocamos en la ruta cercana al pickup
+    final deviationBounds = _calculateDeviationBounds();
 
     return GoogleMap(
       initialCameraPosition: CameraPosition(
-        target: LatLng(_trip!.origin.latitude, _trip!.origin.longitude),
-        zoom: 13,
+        target: LatLng(
+          _request!.pickupPoint.latitude,
+          _request!.pickupPoint.longitude,
+        ),
+        zoom: 14,
       ),
       markers: markers,
       polylines: polylines,
@@ -379,7 +412,7 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
         _mapController = controller;
         Future.delayed(const Duration(milliseconds: 300), () {
           controller.animateCamera(
-            CameraUpdate.newLatLngBounds(bounds, 80),
+            CameraUpdate.newLatLngBounds(deviationBounds, 80),
           );
         });
       },
@@ -389,30 +422,103 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
     );
   }
 
-  LatLngBounds _calculateBounds(Set<Marker> markers) {
+  /// Calcula bounds enfocados en la zona del desvío:
+  /// Muestra el punto de pickup y la porción de ruta original cercana,
+  /// para que el conductor vea claramente cuánto se desvía.
+  LatLngBounds _calculateDeviationBounds() {
     double minLat = double.infinity;
     double maxLat = -double.infinity;
     double minLng = double.infinity;
     double maxLng = -double.infinity;
 
-    for (final marker in markers) {
-      minLat = minLat < marker.position.latitude
-          ? minLat
-          : marker.position.latitude;
-      maxLat = maxLat > marker.position.latitude
-          ? maxLat
-          : marker.position.latitude;
-      minLng = minLng < marker.position.longitude
-          ? minLng
-          : marker.position.longitude;
-      maxLng = maxLng > marker.position.longitude
-          ? maxLng
-          : marker.position.longitude;
+    void expandBounds(double lat, double lng) {
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
     }
 
+    final pickupLat = _request!.pickupPoint.latitude;
+    final pickupLng = _request!.pickupPoint.longitude;
+
+    // Siempre incluir el punto de pickup del pasajero
+    expandBounds(pickupLat, pickupLng);
+
+    // Encontrar el punto más cercano de la ruta ORIGINAL al pickup
+    // y tomar un segmento de puntos alrededor para mostrar la ruta base
+    if (_deviationInfo?.originalRoute != null) {
+      final originalPoints = _deviationInfo!.originalRoute.polylinePoints;
+      int closestIndex = 0;
+      double closestDist = double.infinity;
+
+      for (int i = 0; i < originalPoints.length; i++) {
+        final dx = originalPoints[i].latitude - pickupLat;
+        final dy = originalPoints[i].longitude - pickupLng;
+        final dist = dx * dx + dy * dy;
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestIndex = i;
+        }
+      }
+
+      // Tomar ~30% de puntos alrededor del punto más cercano
+      // para mostrar un buen tramo de la ruta original
+      final segmentSize = (originalPoints.length * 0.3).round().clamp(10, 80);
+      final startIdx = (closestIndex - segmentSize ~/ 2).clamp(0, originalPoints.length - 1);
+      final endIdx = (closestIndex + segmentSize ~/ 2).clamp(0, originalPoints.length - 1);
+
+      for (int i = startIdx; i <= endIdx; i++) {
+        expandBounds(
+          originalPoints[i].latitude,
+          originalPoints[i].longitude,
+        );
+      }
+    }
+
+    // También incluir puntos cercanos de la ruta con pickup
+    // para ver cómo se desvía la turquesa respecto a la gris
+    if (_deviationInfo?.routeWithPickup != null) {
+      final pickupPoints = _deviationInfo!.routeWithPickup.polylinePoints;
+      int closestIndex = 0;
+      double closestDist = double.infinity;
+
+      for (int i = 0; i < pickupPoints.length; i++) {
+        final dx = pickupPoints[i].latitude - pickupLat;
+        final dy = pickupPoints[i].longitude - pickupLng;
+        final dist = dx * dx + dy * dy;
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestIndex = i;
+        }
+      }
+
+      // Tomar un segmento alrededor del pickup en la ruta desviada
+      final segmentSize = (pickupPoints.length * 0.35).round().clamp(10, 100);
+      final startIdx = (closestIndex - segmentSize ~/ 2).clamp(0, pickupPoints.length - 1);
+      final endIdx = (closestIndex + segmentSize ~/ 2).clamp(0, pickupPoints.length - 1);
+
+      for (int i = startIdx; i <= endIdx; i++) {
+        expandBounds(
+          pickupPoints[i].latitude,
+          pickupPoints[i].longitude,
+        );
+      }
+    }
+
+    // Fallback si no hay polylines: incluir origen
+    if (_deviationInfo?.originalRoute == null &&
+        _deviationInfo?.routeWithPickup == null) {
+      expandBounds(
+        _trip!.origin.latitude,
+        _trip!.origin.longitude,
+      );
+    }
+
+    // Padding para que no queden los markers pegados al borde
+    const padding = 0.001; // ~100m aprox
     return LatLngBounds(
-      southwest: LatLng(minLat, minLng),
-      northeast: LatLng(maxLat, maxLng),
+      southwest: LatLng(minLat - padding, minLng - padding),
+      northeast: LatLng(maxLat + padding, maxLng + padding),
     );
   }
 
@@ -760,6 +866,7 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Título de sección
         Row(
           children: [
             Container(
@@ -784,56 +891,102 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
           ],
         ),
         const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.only(left: 44),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              if (_request!.preferences.contains('mochila'))
-                _buildPreferenceChip(
-                  icon: Icons.backpack_outlined,
-                  label: 'Mochila',
-                  color: AppColors.textSecondary,
-                ),
-              if (_request!.hasLargeObject)
-                _buildPreferenceChip(
-                  icon: Icons.inventory_2,
-                  label: 'Objeto grande',
-                  color: AppColors.info,
-                ),
-              if (_request!.hasPet) _buildPetChip(),
-            ],
-          ),
-        ),
-        if (_request!.hasLargeObject && _request!.objectDescription != null) ...[
-          const SizedBox(height: 12),
+
+        // Mochila (si aplica)
+        if (_request!.preferences.contains('mochila'))
           Padding(
-            padding: const EdgeInsets.only(left: 44),
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.info.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.description_outlined,
-                    size: 16,
-                    color: AppColors.info,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _request!.objectDescription!,
-                      style: AppTextStyles.caption,
-                    ),
-                  ),
-                ],
-              ),
+            padding: const EdgeInsets.only(left: 44, bottom: 8),
+            child: _buildPreferenceChip(
+              icon: Icons.backpack_outlined,
+              label: 'Mochila',
+              color: AppColors.textSecondary,
             ),
           ),
+
+        // Objeto grande + su descripción (juntos como bloque)
+        if (_request!.hasLargeObject) ...[
+          Padding(
+            padding: const EdgeInsets.only(left: 44),
+            child: _buildPreferenceChip(
+              icon: Icons.inventory_2,
+              label: 'Objeto grande',
+              color: AppColors.info,
+            ),
+          ),
+          if (_request!.objectDescription != null &&
+              _request!.objectDescription!.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.only(left: 44),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.info.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.description_outlined,
+                      size: 16,
+                      color: AppColors.info,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _request!.objectDescription!,
+                        style: AppTextStyles.caption,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+        ],
+
+        // Mascota + su descripción (juntos como bloque)
+        if (_request!.hasPet) ...[
+          Padding(
+            padding: const EdgeInsets.only(left: 44),
+            child: _buildPetChip(),
+          ),
+          if (_request!.petType == 'otro' &&
+              _request!.petDescription != null &&
+              _request!.petDescription!.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.only(left: 44),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.pets,
+                      size: 16,
+                      color: Colors.amber.shade800,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _request!.petDescription!,
+                        style: AppTextStyles.caption.copyWith(
+                          color: Colors.amber.shade800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ],
       ],
     );
@@ -879,7 +1032,7 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
         label = 'Gato';
         break;
       case 'otro':
-        label = _request!.petDescription ?? 'Otra mascota';
+        label = 'Otra mascota';
         break;
       default:
         label = 'Mascota';
@@ -944,10 +1097,29 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
           ],
         ),
         const Spacer(),
-        Text(
-          '\$${_trip!.pricePerPassenger.toStringAsFixed(2)}',
-          style: AppTextStyles.h3.copyWith(
-            color: AppColors.success,
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.speed,
+                size: 16,
+                color: AppColors.primary,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                'Taximetro',
+                style: AppTextStyles.body2.copyWith(
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
         ),
       ],

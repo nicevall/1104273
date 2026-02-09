@@ -22,6 +22,7 @@ class MainNavigationScreen extends StatefulWidget {
   final String userRole; // 'pasajero', 'conductor', 'ambos'
   final bool hasVehicle; // true si tiene vehículo registrado
   final String? activeRole; // Rol activo inicial (para mantener contexto al navegar)
+  final int? initialTab; // Tab inicial (0=Inicio, 1=Actividad, 2=Mensajes)
 
   const MainNavigationScreen({
     super.key,
@@ -29,6 +30,7 @@ class MainNavigationScreen extends StatefulWidget {
     required this.userRole,
     this.hasVehicle = false,
     this.activeRole,
+    this.initialTab,
   });
 
   @override
@@ -51,6 +53,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     _userId = widget.userId;
     _userRole = widget.userRole;
     _hasVehicle = widget.hasVehicle;
+    if (widget.initialTab != null && widget.initialTab! >= 0 && widget.initialTab! <= 2) {
+      _currentIndex = widget.initialTab!;
+    }
     _buildScreens();
   }
 

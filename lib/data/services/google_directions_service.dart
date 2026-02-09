@@ -1,5 +1,6 @@
 // lib/data/services/google_directions_service.dart
-// Servicio para obtener rutas y calcular desvíos usando Google Directions API
+// Servicio para obtener rutas, navegación turn-by-turn y calcular desvíos
+// usando Google Directions API
 
 import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -54,17 +55,21 @@ class GoogleDirectionsService {
       }
 
       final route = data['routes'][0];
-      final leg = route['legs'][0];
+      final legs = route['legs'] as List;
 
       final encodedPolyline = route['overview_polyline']['points'] as String;
       final polylinePoints = _decodePolyline(encodedPolyline);
 
+      // Extraer pasos de navegación de todos los legs
+      final steps = _parseStepsFromLegs(legs);
+
       return RouteInfo(
         encodedPolyline: encodedPolyline,
-        durationSeconds: leg['duration']['value'] as int,
-        distanceMeters: leg['distance']['value'] as int,
+        durationSeconds: legs[0]['duration']['value'] as int,
+        distanceMeters: legs[0]['distance']['value'] as int,
         polylinePoints: polylinePoints,
         summary: route['summary'] as String?,
+        steps: steps,
       );
     } catch (e) {
       rethrow;
@@ -125,12 +130,16 @@ class GoogleDirectionsService {
       final encodedPolyline = route['overview_polyline']['points'] as String;
       final polylinePoints = _decodePolyline(encodedPolyline);
 
+      // Extraer pasos de navegación de todos los legs
+      final steps = _parseStepsFromLegs(legs);
+
       return RouteInfo(
         encodedPolyline: encodedPolyline,
         durationSeconds: totalDuration,
         distanceMeters: totalDistance,
         polylinePoints: polylinePoints,
         summary: route['summary'] as String?,
+        steps: steps,
       );
     } catch (e) {
       rethrow;
@@ -206,12 +215,16 @@ class GoogleDirectionsService {
       final encodedPolyline = route['overview_polyline']['points'] as String;
       final polylinePoints = _decodePolyline(encodedPolyline);
 
+      // Extraer pasos de navegación de todos los legs
+      final steps = _parseStepsFromLegs(legs);
+
       return RouteInfo(
         encodedPolyline: encodedPolyline,
         durationSeconds: totalDuration,
         distanceMeters: totalDistance,
         polylinePoints: polylinePoints,
         summary: route['summary'] as String?,
+        steps: steps,
       );
     } catch (e) {
       rethrow;
@@ -224,7 +237,6 @@ class GoogleDirectionsService {
     required TripLocation destination,
     required TripLocation pickup,
   }) async {
-    // Obtener ruta original (directa)
     final originalRoute = await getRoute(
       originLat: origin.latitude,
       originLng: origin.longitude,
@@ -232,11 +244,8 @@ class GoogleDirectionsService {
       destLng: destination.longitude,
     );
 
-    if (originalRoute == null) {
-      return null;
-    }
+    if (originalRoute == null) return null;
 
-    // Obtener ruta con el punto de recogida
     final routeWithPickup = await getRouteWithWaypoint(
       originLat: origin.latitude,
       originLng: origin.longitude,
@@ -246,9 +255,7 @@ class GoogleDirectionsService {
       destLng: destination.longitude,
     );
 
-    if (routeWithPickup == null) {
-      return null;
-    }
+    if (routeWithPickup == null) return null;
 
     final deviationMinutes =
         routeWithPickup.durationMinutes - originalRoute.durationMinutes;
@@ -274,7 +281,6 @@ class GoogleDirectionsService {
     required List<TripLocation> acceptedPickups,
     required TripLocation newPickup,
   }) async {
-    // Ruta actual (con los pasajeros ya aceptados)
     final currentWaypoints =
         acceptedPickups.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
@@ -286,11 +292,8 @@ class GoogleDirectionsService {
       destLng: destination.longitude,
     );
 
-    if (currentRoute == null) {
-      return null;
-    }
+    if (currentRoute == null) return null;
 
-    // Ruta con el nuevo pasajero
     final newWaypoints = [
       ...currentWaypoints,
       LatLng(newPickup.latitude, newPickup.longitude),
@@ -304,9 +307,7 @@ class GoogleDirectionsService {
       destLng: destination.longitude,
     );
 
-    if (newRoute == null) {
-      return null;
-    }
+    if (newRoute == null) return null;
 
     final deviationMinutes =
         newRoute.durationMinutes - currentRoute.durationMinutes;
@@ -325,6 +326,46 @@ class GoogleDirectionsService {
     );
   }
 
+  // ============================================================
+  // HELPERS PRIVADOS
+  // ============================================================
+
+  /// Parsea los pasos de navegación de todos los legs de la respuesta
+  List<NavigationStep> _parseStepsFromLegs(List legs) {
+    final steps = <NavigationStep>[];
+
+    for (final leg in legs) {
+      final legSteps = leg['steps'] as List? ?? [];
+
+      for (final step in legSteps) {
+        final htmlInstruction = step['html_instructions'] as String? ?? '';
+        final instruction = stripHtmlTags(htmlInstruction);
+
+        if (instruction.isEmpty) continue;
+
+        final startLoc = step['start_location'];
+        final endLoc = step['end_location'];
+
+        steps.add(NavigationStep(
+          instruction: instruction,
+          distanceMeters: step['distance']?['value'] as int? ?? 0,
+          durationSeconds: step['duration']?['value'] as int? ?? 0,
+          startLocation: LatLng(
+            (startLoc['lat'] as num).toDouble(),
+            (startLoc['lng'] as num).toDouble(),
+          ),
+          endLocation: LatLng(
+            (endLoc['lat'] as num).toDouble(),
+            (endLoc['lng'] as num).toDouble(),
+          ),
+          maneuver: step['maneuver'] as String?,
+        ));
+      }
+    }
+
+    return steps;
+  }
+
   /// Decodificar polyline de Google a lista de LatLng
   List<LatLng> _decodePolyline(String encoded) {
     final List<LatLng> points = [];
@@ -333,7 +374,6 @@ class GoogleDirectionsService {
     int lng = 0;
 
     while (index < encoded.length) {
-      // Decodificar latitud
       int shift = 0;
       int result = 0;
       int byte;
@@ -347,7 +387,6 @@ class GoogleDirectionsService {
       int deltaLat = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
       lat += deltaLat;
 
-      // Decodificar longitud
       shift = 0;
       result = 0;
 
@@ -366,6 +405,6 @@ class GoogleDirectionsService {
     return points;
   }
 
-  /// Método público para decodificar polyline (útil para testing o UI)
+  /// Método público para decodificar polyline
   List<LatLng> decodePolyline(String encoded) => _decodePolyline(encoded);
 }

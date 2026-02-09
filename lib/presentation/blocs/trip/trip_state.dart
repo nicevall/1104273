@@ -40,9 +40,9 @@ class DriverTripsLoaded extends TripState {
   List<TripModel> get scheduledTrips =>
       trips.where((t) => t.isScheduled).toList();
 
-  /// Viajes activos
+  /// Viajes activos (buscando pasajeros + en progreso)
   List<TripModel> get activeTrips =>
-      trips.where((t) => t.isActive).toList();
+      trips.where((t) => t.isActive || t.isInProgress).toList();
 
   /// Viajes completados
   List<TripModel> get completedTrips =>

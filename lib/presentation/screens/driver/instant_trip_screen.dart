@@ -14,6 +14,8 @@ import '../../../data/models/trip_model.dart';
 import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/google_places_service.dart';
+import '../../../data/services/google_directions_service.dart';
+import '../../../data/services/pricing_service.dart';
 import '../../../data/services/location_cache_service.dart';
 import '../../blocs/trip/trip_bloc.dart';
 import '../../blocs/trip/trip_event.dart';
@@ -56,21 +58,33 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
   // === Capacidad y Precio ===
   int _capacity = 3;
   int _maxCapacity = 4;
-  bool _useSmartPricing = true;
-  double _smartPrice = 1.50;
-  double _manualPrice = 1.50;
+  final _directionsService = GoogleDirectionsService();
+  final _pricingService = PricingService();
+  FareResult? _fareResult;
+  bool _isCalculatingFare = false;
 
   // === Preferencias ===
   bool _allowsLuggage = true;
-  bool _allowsPets = false;
-  String _chatLevel = 'flexible';
+  bool _allowsPets = true; // Instantáneo: acepta todo para máximas solicitudes
+  String _chatLevel = 'moderado';
   int _maxWaitMinutes = 5;
   final _notesController = TextEditingController();
 
   // === Estado ===
   VehicleModel? _vehicle;
   bool _isLoading = false;
-  bool _confirmDataCorrect = false;
+  // _confirmDataCorrect removed — button auto-enables when inputs valid
+
+  /// Validates all required fields for publishing
+  bool get _isFormValid {
+    return _routeConfirmed &&
+        _origin != null &&
+        _destination != null &&
+        _vehicle != null &&
+        _capacity > 0 &&
+        _chatLevel.isNotEmpty &&
+        _maxWaitMinutes > 0;
+  }
 
   @override
   void initState() {
@@ -307,6 +321,42 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
   }
 
   // ============================================================
+  // FARE CALCULATION
+  // ============================================================
+
+  Future<void> _calculateFare() async {
+    if (_origin == null || _destination == null) return;
+
+    setState(() => _isCalculatingFare = true);
+
+    try {
+      final routeInfo = await _directionsService.getRoute(
+        originLat: _origin!.latitude,
+        originLng: _origin!.longitude,
+        destLat: _destination!.latitude,
+        destLng: _destination!.longitude,
+      );
+
+      if (routeInfo != null && mounted) {
+        final fare = _pricingService.calculateFromMeters(
+          distanceMeters: routeInfo.distanceMeters,
+          durationSeconds: routeInfo.durationSeconds,
+        );
+        setState(() {
+          _fareResult = fare;
+          _isCalculatingFare = false;
+        });
+      } else if (mounted) {
+        setState(() => _isCalculatingFare = false);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isCalculatingFare = false);
+      }
+    }
+  }
+
+  // ============================================================
   // PUBLISH TRIP
   // ============================================================
 
@@ -323,9 +373,6 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
       _showError('No se encontró tu vehículo registrado');
       return;
     }
-
-    final price = _useSmartPricing ? _smartPrice : _manualPrice;
-
     final trip = TripModel(
       tripId: '',
       driverId: widget.userId,
@@ -335,7 +382,10 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
       destination: _destination!,
       departureTime: DateTime.now(),
       recurringDays: null,
-      pricePerPassenger: price,
+      pricePerPassenger: 0.0,
+      useTaximeter: true,
+      distanceKm: _fareResult?.distanceKm ?? 0.0,
+      durationMinutes: _fareResult?.durationMinutes ?? 0,
       totalCapacity: _capacity,
       availableSeats: _capacity,
       allowsLuggage: _allowsLuggage,
@@ -372,9 +422,9 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
     return BlocListener<TripBloc, TripState>(
       listener: (context, state) {
         if (state is TripCreated) {
-          // Viaje instantáneo → ir a pantalla de viaje activo (mapa + solicitudes)
+          // Viaje instantáneo → ir directo a lista de pasajeros disponibles
           if (state.trip.isActive) {
-            context.go('/driver/active-trip/${state.trip.tripId}');
+            context.go('/driver/active-requests/${state.trip.tripId}');
           } else {
             // Viaje programado → ir a confirmación
             context.go('/driver/trip-created', extra: {
@@ -454,6 +504,9 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
 
                 // Opción elegir en el mapa
                 _buildMapPickerOption(),
+
+                // Ubicación predeterminada: UIDE Loja
+                _buildUideShortcut(),
               ],
             ),
           ),
@@ -477,7 +530,10 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
             height: AppDimensions.buttonHeightLarge,
             child: ElevatedButton(
               onPressed: (_origin != null && _destination != null)
-                  ? () => setState(() => _routeConfirmed = true)
+                  ? () {
+                      setState(() => _routeConfirmed = true);
+                      _calculateFare();
+                    }
                   : null,
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
@@ -736,6 +792,85 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
     );
   }
 
+  Widget _buildUideShortcut() {
+    return GestureDetector(
+      onTap: _onUideSelected,
+      child: Container(
+        margin: const EdgeInsets.only(top: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: AppColors.inputFill,
+          borderRadius: BorderRadius.circular(AppDimensions.radiusM),
+          border: Border.all(color: AppColors.inputBorder),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.school,
+                color: AppColors.primary,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'UIDE Loja',
+                    style: AppTextStyles.body2.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Universidad Internacional del Ecuador',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.arrow_forward_ios,
+              size: 14,
+              color: AppColors.textSecondary,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _onUideSelected() {
+    if (_isLoadingLocation || _originLatitude == null) {
+      _showError('Esperando ubicación GPS...');
+      return;
+    }
+
+    setState(() {
+      _destination = TripLocation(
+        name: 'UIDE Loja',
+        address: 'Universidad Internacional del Ecuador, Agustín Carrión Palacios, Loja, Ecuador',
+        latitude: -3.97245,
+        longitude: -79.19933,
+      );
+      _destinationText = 'UIDE Loja';
+      _destController.text = 'UIDE Loja';
+      _destSuggestions = [];
+      _destFocusNode.unfocus();
+    });
+  }
+
   // ============================================================
   // FASE B: PREFERENCES FORM
   // ============================================================
@@ -823,60 +958,18 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
 
                 const SizedBox(height: 28),
 
-                // ===== PRICING =====
-                _buildSectionHeader(
-                    'Precio por pasajero', Icons.attach_money),
-                const SizedBox(height: 12),
-
-                // Smart pricing card
-                _buildPricingCard(
-                  title: 'Precio Inteligente',
-                  subtitle:
-                      'Calculado en base a la distancia y hora',
-                  price: _smartPrice,
-                  isSelected: _useSmartPricing,
-                  isRecommended: true,
-                  onTap: () =>
-                      setState(() => _useSmartPricing = true),
-                ),
-
-                const SizedBox(height: 12),
-
-                // Manual pricing card
-                _buildManualPricingCard(),
-
-                const SizedBox(height: 28),
-
-                // ===== PREFERENCES =====
-                _buildSectionHeader('Preferencias', Icons.tune),
-                const SizedBox(height: 12),
-
-                // Luggage toggle
-                _buildToggleRow(
-                  icon: Icons.luggage_outlined,
-                  label: 'Permite equipaje grande',
-                  value: _allowsLuggage,
-                  onChanged: (v) =>
-                      setState(() => _allowsLuggage = v),
-                ),
-
-                const SizedBox(height: 4),
-
-                // Pets toggle
-                _buildToggleRow(
-                  icon: Icons.pets_outlined,
-                  label: 'Permite mascotas',
-                  value: _allowsPets,
-                  onChanged: (v) =>
-                      setState(() => _allowsPets = v),
-                ),
-
-                const SizedBox(height: 20),
-
                 // Conversation level
                 _buildSectionHeader(
                     'Nivel de conversación', Icons.chat),
-                const SizedBox(height: 12),
+                const SizedBox(height: 4),
+                Text(
+                  '¿Qué ambiente prefieres durante el viaje?',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textTertiary,
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(height: 10),
                 Row(
                   children: [
                     _buildChatChip('silencioso', Icons.volume_off,
@@ -896,16 +989,24 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
                 _buildSectionHeader(
                     'Tiempo de espera máximo',
                     Icons.timer_outlined),
-                const SizedBox(height: 12),
+                const SizedBox(height: 4),
+                Text(
+                  '¿Cuánto esperas a un pasajero en el punto de recogida?',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textTertiary,
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(height: 10),
                 Row(
                   children: [
+                    _buildWaitTimeChip(1),
+                    const SizedBox(width: 8),
                     _buildWaitTimeChip(3),
                     const SizedBox(width: 8),
                     _buildWaitTimeChip(5),
                     const SizedBox(width: 8),
-                    _buildWaitTimeChip(10),
-                    const SizedBox(width: 8),
-                    _buildWaitTimeChip(15),
+                    _buildWaitTimeChip(7),
                   ],
                 ),
 
@@ -914,7 +1015,15 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
                 // Additional notes
                 _buildSectionHeader(
                     'Notas adicionales', Icons.note_outlined),
-                const SizedBox(height: 12),
+                const SizedBox(height: 4),
+                Text(
+                  'Opcional — información extra para tus pasajeros',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textTertiary,
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(height: 10),
                 TextFormField(
                   controller: _notesController,
                   maxLength: 150,
@@ -926,7 +1035,22 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
                       color: AppColors.textTertiary,
                     ),
                     filled: true,
-                    fillColor: AppColors.inputFill,
+                    fillColor: _notesController.text.isNotEmpty
+                        ? AppColors.primary.withOpacity(0.05)
+                        : AppColors.inputFill,
+                    prefixIcon: Padding(
+                      padding: const EdgeInsets.only(
+                          left: 12, bottom: 36),
+                      child: Icon(
+                        _notesController.text.isNotEmpty
+                            ? Icons.edit_note
+                            : Icons.note_alt_outlined,
+                        size: 20,
+                        color: _notesController.text.isNotEmpty
+                            ? AppColors.primary
+                            : AppColors.textTertiary,
+                      ),
+                    ),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(
                           AppDimensions.radiusM),
@@ -936,8 +1060,14 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(
                           AppDimensions.radiusM),
-                      borderSide: const BorderSide(
-                          color: AppColors.inputBorder),
+                      borderSide: BorderSide(
+                        color: _notesController.text.isNotEmpty
+                            ? AppColors.primary.withOpacity(0.5)
+                            : AppColors.inputBorder,
+                        width: _notesController.text.isNotEmpty
+                            ? 1.5
+                            : 1,
+                      ),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(
@@ -946,31 +1076,16 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
                           color: AppColors.primary, width: 2),
                     ),
                     counterStyle: AppTextStyles.caption.copyWith(
-                      color: AppColors.textSecondary,
+                      color: _notesController.text.length > 120
+                          ? AppColors.warning
+                          : AppColors.textSecondary,
                     ),
                   ),
                   style: AppTextStyles.body2,
                   onChanged: (_) => setState(() {}),
                 ),
 
-                const SizedBox(height: 16),
-
-                // Confirmation checkbox
-                CheckboxListTile(
-                  value: _confirmDataCorrect,
-                  onChanged: (v) => setState(
-                      () => _confirmDataCorrect = v ?? false),
-                  title: Text(
-                    'Confirmo que los datos son correctos',
-                    style: AppTextStyles.body2.copyWith(
-                      color: AppColors.textPrimary,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  activeColor: AppColors.primary,
-                  controlAffinity: ListTileControlAffinity.leading,
-                  contentPadding: EdgeInsets.zero,
-                ),
+                const SizedBox(height: 8),
               ],
             ),
           ),
@@ -1060,7 +1175,7 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
         child: ElevatedButton(
           onPressed: _isLoading
               ? null
-              : (_confirmDataCorrect ? _publishTrip : null),
+              : (_isFormValid ? _publishTrip : null),
           style: ElevatedButton.styleFrom(
             backgroundColor: AppColors.primary,
             foregroundColor: Colors.white,
@@ -1172,11 +1287,12 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
     return Expanded(
       child: GestureDetector(
         onTap: () => setState(() => _chatLevel = value),
-        child: Container(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
             color: isSelected
-                ? AppColors.primary.withOpacity(0.1)
+                ? AppColors.primary.withOpacity(0.15)
                 : AppColors.inputFill,
             borderRadius: BorderRadius.circular(
                 AppDimensions.radiusM),
@@ -1184,18 +1300,51 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
               color: isSelected
                   ? AppColors.primary
                   : AppColors.inputBorder,
+              width: isSelected ? 2 : 1,
             ),
+            boxShadow: isSelected
+                ? [
+                    BoxShadow(
+                      color: AppColors.primary.withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : [],
           ),
           child: Column(
             children: [
-              Icon(
-                icon,
-                size: 22,
-                color: isSelected
-                    ? AppColors.primary
-                    : AppColors.textSecondary,
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  Icon(
+                    icon,
+                    size: 24,
+                    color: isSelected
+                        ? AppColors.primary
+                        : AppColors.textSecondary,
+                  ),
+                  if (isSelected)
+                    Positioned(
+                      right: -2,
+                      top: -2,
+                      child: Container(
+                        width: 14,
+                        height: 14,
+                        decoration: const BoxDecoration(
+                          color: AppColors.primary,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.check,
+                          size: 10,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                ],
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 6),
               Text(
                 label,
                 style: AppTextStyles.caption.copyWith(
@@ -1203,9 +1352,9 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
                       ? AppColors.primary
                       : AppColors.textSecondary,
                   fontWeight: isSelected
-                      ? FontWeight.w600
+                      ? FontWeight.w700
                       : FontWeight.w400,
-                  fontSize: 11,
+                  fontSize: 12,
                 ),
               ),
             ],
@@ -1221,11 +1370,12 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
       child: GestureDetector(
         onTap: () =>
             setState(() => _maxWaitMinutes = minutes),
-        child: Container(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
             color: isSelected
-                ? AppColors.primary.withOpacity(0.1)
+                ? AppColors.primary.withOpacity(0.15)
                 : AppColors.inputFill,
             borderRadius:
                 BorderRadius.circular(AppDimensions.radiusM),
@@ -1233,267 +1383,46 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
               color: isSelected
                   ? AppColors.primary
                   : AppColors.inputBorder,
+              width: isSelected ? 2 : 1,
             ),
+            boxShadow: isSelected
+                ? [
+                    BoxShadow(
+                      color: AppColors.primary.withOpacity(0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : [],
           ),
-          child: Center(
-            child: Text(
-              '$minutes min',
-              style: AppTextStyles.caption.copyWith(
-                color: isSelected
-                    ? AppColors.primary
-                    : AppColors.textSecondary,
-                fontWeight: isSelected
-                    ? FontWeight.w600
-                    : FontWeight.w400,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPricingCard({
-    required String title,
-    required String subtitle,
-    required double price,
-    required bool isSelected,
-    required VoidCallback onTap,
-    bool isRecommended = false,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.primary.withOpacity(0.05)
-              : AppColors.inputFill,
-          borderRadius:
-              BorderRadius.circular(AppDimensions.radiusM),
-          border: Border.all(
-            color: isSelected
-                ? AppColors.primary
-                : AppColors.inputBorder,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            // Radio indicator
-            Container(
-              width: 24,
-              height: 24,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
+          child: Column(
+            children: [
+              if (isSelected)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 4),
+                  child: Icon(
+                    Icons.check_circle,
+                    size: 16,
+                    color: AppColors.primary,
+                  ),
+                ),
+              Text(
+                '$minutes min',
+                style: AppTextStyles.caption.copyWith(
                   color: isSelected
                       ? AppColors.primary
-                      : AppColors.disabled,
-                  width: 2,
+                      : AppColors.textSecondary,
+                  fontWeight: isSelected
+                      ? FontWeight.w700
+                      : FontWeight.w400,
+                  fontSize: isSelected ? 13 : 12,
                 ),
               ),
-              child: isSelected
-                  ? Center(
-                      child: Container(
-                        width: 12,
-                        height: 12,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.primary,
-                        ),
-                      ),
-                    )
-                  : null,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        title,
-                        style: AppTextStyles.body2.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: isSelected
-                              ? AppColors.textPrimary
-                              : AppColors.textSecondary,
-                        ),
-                      ),
-                      if (isRecommended) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: AppColors.success
-                                .withOpacity(0.15),
-                            borderRadius:
-                                BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            'Recomendado',
-                            style:
-                                AppTextStyles.caption.copyWith(
-                              fontSize: 10,
-                              color: AppColors.success,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: AppTextStyles.caption.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Text(
-              '\$${price.toStringAsFixed(2)}',
-              style: AppTextStyles.h3.copyWith(
-                fontWeight: FontWeight.w700,
-                color: isSelected
-                    ? AppColors.primary
-                    : AppColors.textSecondary,
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildManualPricingCard() {
-    final isSelected = !_useSmartPricing;
-    return GestureDetector(
-      onTap: () => setState(() => _useSmartPricing = false),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.primary.withOpacity(0.05)
-              : AppColors.inputFill,
-          borderRadius:
-              BorderRadius.circular(AppDimensions.radiusM),
-          border: Border.all(
-            color: isSelected
-                ? AppColors.primary
-                : AppColors.inputBorder,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                // Radio indicator
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: isSelected
-                          ? AppColors.primary
-                          : AppColors.disabled,
-                      width: 2,
-                    ),
-                  ),
-                  child: isSelected
-                      ? Center(
-                          child: Container(
-                            width: 12,
-                            height: 12,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppColors.primary,
-                            ),
-                          ),
-                        )
-                      : null,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Precio Manual',
-                        style: AppTextStyles.body2.copyWith(
-                          fontWeight: FontWeight.w600,
-                          color: isSelected
-                              ? AppColors.textPrimary
-                              : AppColors.textSecondary,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Establece tu propio precio',
-                        style:
-                            AppTextStyles.caption.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            if (isSelected) ...[
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _buildStepperButton(
-                    icon: Icons.remove,
-                    enabled: _manualPrice > 0.25,
-                    onTap: () {
-                      if (_manualPrice > 0.25) {
-                        setState(() => _manualPrice =
-                            double.parse(
-                                (_manualPrice - 0.25)
-                                    .toStringAsFixed(2)));
-                      }
-                    },
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 24),
-                    child: Text(
-                      '\$${_manualPrice.toStringAsFixed(2)}',
-                      style: AppTextStyles.h2.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.primary,
-                      ),
-                    ),
-                  ),
-                  _buildStepperButton(
-                    icon: Icons.add,
-                    enabled: _manualPrice < 10.00,
-                    onTap: () {
-                      if (_manualPrice < 10.00) {
-                        setState(() => _manualPrice =
-                            double.parse(
-                                (_manualPrice + 0.25)
-                                    .toStringAsFixed(2)));
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
 }

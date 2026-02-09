@@ -74,7 +74,7 @@ class _TripResultsScreenState extends State<TripResultsScreen> {
       userId: widget.userId,
       status: 'pending',
       pickupPoint: widget.pickupPoint,
-      price: trip.pricePerPassenger,
+      price: 0.0,
       preferences: widget.preferences,
       referenceNote: widget.referenceNote,
       objectDescription: widget.objectDescription,
@@ -297,29 +297,6 @@ class _TripResultsScreenState extends State<TripResultsScreen> {
               ),
 
               const Spacer(),
-
-              // Precio
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '\$${trip.pricePerPassenger.toStringAsFixed(2)}',
-                    style: AppTextStyles.body1.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.primary,
-                    ),
-                  ),
-                  Text(
-                    'puede bajar',
-                    style: AppTextStyles.caption.copyWith(
-                      fontSize: 10,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(width: 12),
 
               // Botón solicitar
               ElevatedButton(

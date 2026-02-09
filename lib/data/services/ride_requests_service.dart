@@ -13,15 +13,19 @@ class RideRequestsService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   static const String _requestsCollection = 'ride_requests';
-  static const int _defaultExpiryMinutes = 30; // Las solicitudes expiran en 30 min
+  static const int _defaultExpiryMinutes = 3; // Las solicitudes expiran en 3 min
 
   // ==================== CRUD Básico ====================
 
   /// Crear nueva solicitud de viaje (pasajero)
   ///
-  /// Retorna el requestId generado
+  /// Cancela solicitudes activas previas antes de crear la nueva.
+  /// Retorna el requestId generado.
   Future<String> createRequest(RideRequestModel request) async {
     try {
+      // Cancelar solicitudes activas previas del mismo pasajero
+      await _cancelPreviousActiveRequests(request.passengerId);
+
       final docRef = _firestore.collection(_requestsCollection).doc();
       final requestWithId = request.copyWith(requestId: docRef.id);
 
@@ -32,6 +36,31 @@ class RideRequestsService {
       throw _handleFirestoreError(e);
     } catch (e) {
       throw Exception('Error al crear solicitud: $e');
+    }
+  }
+
+  /// Cancelar todas las solicitudes activas previas de un pasajero
+  Future<void> _cancelPreviousActiveRequests(String passengerId) async {
+    try {
+      final querySnapshot = await _firestore
+          .collection(_requestsCollection)
+          .where('passengerId', isEqualTo: passengerId)
+          .where('status', isEqualTo: 'searching')
+          .get();
+
+      if (querySnapshot.docs.isEmpty) return;
+
+      final batch = _firestore.batch();
+      for (final doc in querySnapshot.docs) {
+        batch.update(doc.reference, {
+          'status': 'cancelled',
+          'completedAt': Timestamp.now(),
+        });
+      }
+      await batch.commit();
+    } catch (e) {
+      // No bloquear la creación si falla la cancelación
+      // Las solicitudes viejas expirarán solas
     }
   }
 
@@ -156,10 +185,13 @@ class RideRequestsService {
     double radiusKm = 5.0,
   }) {
     try {
+      // Capturar timestamp UNA sola vez para evitar crear queries nuevas en cada tick
+      final now = Timestamp.now();
+
       return _firestore
           .collection(_requestsCollection)
           .where('status', isEqualTo: 'searching')
-          .where('expiresAt', isGreaterThan: Timestamp.now())
+          .where('expiresAt', isGreaterThan: now)
           .snapshots()
           .map((snapshot) {
         final results = <RideRequestModel>[];

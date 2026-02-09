@@ -160,10 +160,6 @@ class TripCreatedScreen extends StatelessWidget {
                           Icons.people_outline,
                           '${trip.totalCapacity} asientos',
                         ),
-                        _buildDetail(
-                          Icons.attach_money,
-                          '\$${trip.pricePerPassenger.toStringAsFixed(2)}',
-                        ),
                       ],
                     ),
                   ],
@@ -176,11 +172,13 @@ class TripCreatedScreen extends StatelessWidget {
               SizedBox(
                 width: double.infinity,
                 height: AppDimensions.buttonHeightLarge,
-                child: ElevatedButton(
+                child: ElevatedButton.icon(
                   onPressed: () {
-                    // Ir al home del conductor
-                    context.go('/home');
+                    // Ir directo a buscar pasajeros disponibles
+                    context.go('/driver/active-requests/${trip.tripId}');
                   },
+                  icon: const Icon(Icons.people_outline),
+                  label: Text('Buscar pasajeros', style: AppTextStyles.button),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
@@ -190,7 +188,6 @@ class TripCreatedScreen extends StatelessWidget {
                     ),
                     elevation: 0,
                   ),
-                  child: Text('Ver mis viajes', style: AppTextStyles.button),
                 ),
               ),
 
@@ -201,22 +198,21 @@ class TripCreatedScreen extends StatelessWidget {
                 height: AppDimensions.buttonHeight,
                 child: OutlinedButton(
                   onPressed: () {
-                    context.pushReplacement('/driver/create-trip/form',
-                        extra: {
-                      'userId': trip.driverId,
-                    });
+                    context.go('/home');
                   },
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.primary),
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
                     shape: RoundedRectangleBorder(
                       borderRadius:
                           BorderRadius.circular(AppDimensions.buttonRadius),
                     ),
                   ),
                   child: Text(
-                    'Crear otro viaje',
-                    style: AppTextStyles.buttonSecondary,
+                    'Ir al inicio',
+                    style: AppTextStyles.buttonSecondary.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
                   ),
                 ),
               ),

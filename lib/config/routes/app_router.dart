@@ -29,13 +29,15 @@ import '../../presentation/screens/trip/trip_results_screen.dart';
 import '../../presentation/screens/driver/trip_type_selection_screen.dart';
 import '../../presentation/screens/driver/create_trip_screen.dart';
 import '../../presentation/screens/driver/trip_created_screen.dart';
-import '../../presentation/screens/driver/driver_trip_detail_screen.dart';
+
 import '../../presentation/screens/driver/instant_trip_screen.dart';
 import '../../presentation/screens/driver/driver_active_requests_screen.dart';
 import '../../presentation/screens/driver/passenger_request_detail_screen.dart';
 import '../../presentation/screens/driver/accept_passenger_screen.dart';
 import '../../presentation/screens/driver/driver_active_trip_screen.dart';
 import '../../presentation/screens/trip/passenger_waiting_screen.dart';
+import '../../presentation/screens/trip/passenger_tracking_screen.dart';
+import '../../presentation/screens/trip/rate_driver_screen.dart';
 
 /// Router de la aplicación con go_router
 /// Define todas las rutas y navegación de UniRide
@@ -256,6 +258,7 @@ final GoRouter appRouter = GoRouter(
           userRole: extra?['userRole'] as String? ?? 'pasajero',
           hasVehicle: extra?['hasVehicle'] as bool? ?? false,
           activeRole: extra?['activeRole'] as String?, // Rol activo inicial
+          initialTab: extra?['initialTab'] as int?, // Tab inicial (0=Inicio, 1=Actividad, 2=Mensajes)
         );
       },
     ),
@@ -362,6 +365,9 @@ final GoRouter appRouter = GoRouter(
           destination: extra?['destination'] as Map<String, dynamic>? ?? {},
           preference: extra?['preference'] as String? ?? 'mochila',
           preferenceDescription: extra?['preferenceDescription'] as String? ?? '',
+          petType: extra?['petType'] as String?,
+          petSize: extra?['petSize'] as String?,
+          petDescription: extra?['petDescription'] as String?,
           paymentMethod: extra?['paymentMethod'] as String? ?? 'Efectivo',
         );
       },
@@ -436,16 +442,6 @@ final GoRouter appRouter = GoRouter(
       },
     ),
 
-    // Driver Trip Detail - Detalle de un viaje del conductor
-    GoRoute(
-      path: '/driver/trip/:tripId',
-      name: 'driver-trip-detail',
-      builder: (context, state) {
-        final tripId = state.pathParameters['tripId'] ?? '';
-        return DriverTripDetailScreen(tripId: tripId);
-      },
-    ),
-
     // Driver Active Trip - Pantalla principal del viaje activo
     GoRoute(
       path: '/driver/active-trip/:tripId',
@@ -516,6 +512,21 @@ final GoRouter appRouter = GoRouter(
       },
     ),
 
+    // Passenger Tracking - Seguimiento en tiempo real del conductor
+    GoRoute(
+      path: '/trip/tracking',
+      name: 'trip-tracking',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return PassengerTrackingScreen(
+          tripId: extra?['tripId'] as String? ?? '',
+          userId: extra?['userId'] as String? ?? '',
+          pickupPoint: extra?['pickupPoint'] as TripLocation,
+          destination: extra?['destination'] as TripLocation,
+        );
+      },
+    ),
+
     // Trip Results - Resultados de búsqueda (pasajero)
     GoRoute(
       path: '/trip/results',
@@ -530,6 +541,22 @@ final GoRouter appRouter = GoRouter(
           preferences: (extra?['preferences'] as List<String>?) ?? const ['mochila'],
           objectDescription: extra?['objectDescription'] as String?,
           petDescription: extra?['petDescription'] as String?,
+        );
+      },
+    ),
+
+    // Rate Driver - Calificar al conductor
+    GoRoute(
+      path: '/trip/rate',
+      name: 'trip-rate',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return RateDriverScreen(
+          tripId: extra?['tripId'] as String? ?? '',
+          passengerId: extra?['passengerId'] as String? ?? '',
+          driverId: extra?['driverId'] as String? ?? '',
+          ratingContext: extra?['ratingContext'] as String? ?? 'completed',
+          fare: extra?['fare'] as double?,
         );
       },
     ),

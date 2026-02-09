@@ -290,38 +290,42 @@ class RideRequestCard extends StatelessWidget {
   Widget _buildBottomSection() {
     return Row(
       children: [
-        // Método de pago
-        _buildPreferenceChip(
-          icon: request.paymentMethod == 'Efectivo'
-              ? Icons.payments_outlined
-              : Icons.phone_android,
-          label: request.paymentMethod,
-          color: AppColors.success,
+        // Chips de preferencias (flexible para evitar overflow)
+        Expanded(
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              // Método de pago
+              _buildPreferenceChip(
+                icon: request.paymentMethod == 'Efectivo'
+                    ? Icons.payments_outlined
+                    : Icons.phone_android,
+                label: request.paymentMethod,
+                color: AppColors.success,
+              ),
+
+              // Equipaje
+              if (request.hasLargeObject)
+                _buildPreferenceChip(
+                  icon: Icons.inventory_2_outlined,
+                  label: 'Grande',
+                  color: AppColors.info,
+                )
+              else if (request.preferences.contains('mochila'))
+                _buildPreferenceChip(
+                  icon: Icons.backpack_outlined,
+                  label: 'Mochila',
+                  color: AppColors.textSecondary,
+                ),
+
+              // Mascota
+              if (request.hasPet) _buildPetChip(),
+            ],
+          ),
         ),
 
         const SizedBox(width: 8),
-
-        // Equipaje
-        if (request.hasLargeObject) ...[
-          _buildPreferenceChip(
-            icon: Icons.inventory_2_outlined,
-            label: 'Grande',
-            color: AppColors.info,
-          ),
-          const SizedBox(width: 8),
-        ] else if (request.preferences.contains('mochila')) ...[
-          _buildPreferenceChip(
-            icon: Icons.backpack_outlined,
-            label: 'Mochila',
-            color: AppColors.textSecondary,
-          ),
-          const SizedBox(width: 8),
-        ],
-
-        // Mascota
-        if (request.hasPet) _buildPetChip(),
-
-        const Spacer(),
 
         // Tiempo restante
         _buildTimeRemaining(),

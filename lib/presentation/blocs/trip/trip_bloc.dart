@@ -56,7 +56,7 @@ class TripBloc extends Bloc<TripEvent, TripState> {
     try {
       final trips = await _tripsService.getDriverTrips(
         event.driverId,
-        statusFilter: ['scheduled', 'active'],
+        statusFilter: ['scheduled', 'active', 'in_progress'],
       );
 
       print('🚗 TripBloc: ${trips.length} viajes encontrados');

@@ -3,6 +3,7 @@
 
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import '../models/trip_model.dart';
 
 /// Servicio para operaciones con la colección 'trips' en Firestore
@@ -413,13 +414,38 @@ class TripsService {
           .collection(_tripsCollection)
           .doc(tripId)
           .update({
-        'status': 'active',
+        'status': 'in_progress',
         'startedAt': Timestamp.now(),
       });
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
     } catch (e) {
       throw Exception('Error al iniciar viaje: $e');
+    }
+  }
+
+  /// Actualizar ubicación del conductor en tiempo real
+  ///
+  /// Solo actualiza 3 campos (eficiente para Firestore)
+  /// Llamar cada ~10 segundos durante viaje activo
+  Future<void> updateDriverLocation(
+    String tripId, {
+    required double latitude,
+    required double longitude,
+  }) async {
+    try {
+      await _firestore
+          .collection(_tripsCollection)
+          .doc(tripId)
+          .update({
+        'driverLatitude': latitude,
+        'driverLongitude': longitude,
+        'driverLocationUpdatedAt': Timestamp.now(),
+      });
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      throw Exception('Error al actualizar ubicación del conductor: $e');
     }
   }
 
@@ -482,6 +508,139 @@ class TripsService {
       throw _handleFirestoreError(e);
     } catch (e) {
       throw Exception('Error al actualizar estado del pasajero: $e');
+    }
+  }
+
+  // ==================== Taxímetro ====================
+
+  /// Iniciar taxímetro para un pasajero (al marcar picked_up)
+  ///
+  /// Registra: pickedUpAt, pickupLatitude, pickupLongitude, isNightTariff
+  /// La tarifa se fija al momento del pickup y no cambia durante el viaje
+  Future<void> startPassengerMeter(
+    String tripId,
+    String passengerId, {
+    required double pickupLatitude,
+    required double pickupLongitude,
+    required bool isNightTariff,
+  }) async {
+    try {
+      final trip = await getTrip(tripId);
+      if (trip == null) throw Exception('Viaje no encontrado');
+
+      final updatedPassengers = trip.passengers.map((p) {
+        if (p.userId == passengerId) {
+          return p.copyWith(
+            pickedUpAt: DateTime.now(),
+            pickupLatitude: pickupLatitude,
+            pickupLongitude: pickupLongitude,
+            isNightTariff: isNightTariff,
+            meterFare: isNightTariff ? 0.50 : 0.40, // Arranque inicial
+            meterDistanceKm: 0.0,
+            meterWaitMinutes: 0.0,
+          );
+        }
+        return p;
+      }).toList();
+
+      await _firestore
+          .collection(_tripsCollection)
+          .doc(tripId)
+          .update({
+        'passengers': updatedPassengers.map((p) => p.toJson()).toList(),
+      });
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      throw Exception('Error al iniciar taxímetro: $e');
+    }
+  }
+
+  /// Sincronizar datos del taxímetro a Firestore (cada ~30 seg)
+  ///
+  /// Actualiza: meterDistanceKm, meterWaitMinutes, meterFare, meterLastUpdated
+  /// El pasajero lee estos valores desde su app para ver la tarifa en tiempo real
+  Future<void> updatePassengerMeter(
+    String tripId,
+    String passengerId, {
+    required double meterDistanceKm,
+    required double meterWaitMinutes,
+    required double meterFare,
+  }) async {
+    try {
+      final trip = await getTrip(tripId);
+      if (trip == null) return;
+
+      final updatedPassengers = trip.passengers.map((p) {
+        if (p.userId == passengerId) {
+          return p.copyWith(
+            meterDistanceKm: meterDistanceKm,
+            meterWaitMinutes: meterWaitMinutes,
+            meterFare: meterFare,
+            meterLastUpdated: DateTime.now(),
+          );
+        }
+        return p;
+      }).toList();
+
+      await _firestore
+          .collection(_tripsCollection)
+          .doc(tripId)
+          .update({
+        'passengers': updatedPassengers.map((p) => p.toJson()).toList(),
+      });
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      // Silenciar errores de sync — no es crítico si falla uno
+      debugPrint('Error al sincronizar taxímetro: $e');
+    }
+  }
+
+  /// Bajar pasajero — congelar tarifa final del taxímetro
+  ///
+  /// Cambia status a 'dropped_off', fija price = finalFare,
+  /// registra ubicación y hora de bajada
+  Future<void> dropOffPassenger(
+    String tripId,
+    String passengerId, {
+    required double finalFare,
+    required double dropoffLatitude,
+    required double dropoffLongitude,
+    required double totalDistanceKm,
+    required double totalWaitMinutes,
+  }) async {
+    try {
+      final trip = await getTrip(tripId);
+      if (trip == null) throw Exception('Viaje no encontrado');
+
+      final updatedPassengers = trip.passengers.map((p) {
+        if (p.userId == passengerId) {
+          return p.copyWith(
+            status: 'dropped_off',
+            price: finalFare,
+            droppedOffAt: DateTime.now(),
+            dropoffLatitude: dropoffLatitude,
+            dropoffLongitude: dropoffLongitude,
+            meterDistanceKm: totalDistanceKm,
+            meterWaitMinutes: totalWaitMinutes,
+            meterFare: finalFare,
+            meterLastUpdated: DateTime.now(),
+          );
+        }
+        return p;
+      }).toList();
+
+      await _firestore
+          .collection(_tripsCollection)
+          .doc(tripId)
+          .update({
+        'passengers': updatedPassengers.map((p) => p.toJson()).toList(),
+      });
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      throw Exception('Error al bajar pasajero: $e');
     }
   }
 

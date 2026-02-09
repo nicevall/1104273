@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../data/models/trip_model.dart';
 import '../../../data/services/google_places_service.dart';
 
 class ConfirmPickupScreen extends StatefulWidget {
@@ -17,6 +18,9 @@ class ConfirmPickupScreen extends StatefulWidget {
   final Map<String, dynamic> destination;
   final String preference;
   final String preferenceDescription;
+  final String? petType;
+  final String? petSize;
+  final String? petDescription;
   final String paymentMethod;
 
   const ConfirmPickupScreen({
@@ -27,6 +31,9 @@ class ConfirmPickupScreen extends StatefulWidget {
     required this.destination,
     required this.preference,
     required this.preferenceDescription,
+    this.petType,
+    this.petSize,
+    this.petDescription,
     required this.paymentMethod,
   });
 
@@ -224,19 +231,50 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
   }
 
   void _onConfirmPickup() {
-    context.push('/trip/search-results', extra: {
+    // Convertir Maps a TripLocation para PassengerWaitingScreen
+    final origin = TripLocation(
+      name: widget.origin['name'] as String? ?? '',
+      address: widget.origin['address'] as String? ?? '',
+      latitude: widget.origin['latitude'] as double,
+      longitude: widget.origin['longitude'] as double,
+    );
+
+    final destination = TripLocation(
+      name: widget.destination['name'] as String? ?? '',
+      address: widget.destination['address'] as String? ?? '',
+      latitude: widget.destination['latitude'] as double,
+      longitude: widget.destination['longitude'] as double,
+    );
+
+    final pickupPoint = TripLocation(
+      name: _pickupAddress,
+      address: _pickupAddress,
+      latitude: _pickupLocation.latitude,
+      longitude: _pickupLocation.longitude,
+    );
+
+    final reference = _referenceController.text.trim();
+
+    // Splitear preferencias: "mochila,objeto_grande,mascota" → ["mochila", "objeto_grande", "mascota"]
+    final preferences = widget.preference
+        .split(',')
+        .map((p) => p.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+
+    context.push('/trip/waiting', extra: {
       'userId': widget.userId,
-      'userRole': widget.userRole,
-      'origin': widget.origin,
-      'destination': widget.destination,
-      'pickupLocation': {
-        'latitude': _pickupLocation.latitude,
-        'longitude': _pickupLocation.longitude,
-        'address': _pickupAddress,
-        'reference': _referenceController.text.trim(),
-      },
-      'preference': widget.preference,
-      'preferenceDescription': widget.preferenceDescription,
+      'origin': origin,
+      'destination': destination,
+      'pickupPoint': pickupPoint,
+      'referenceNote': reference.isNotEmpty ? reference : null,
+      'preferences': preferences,
+      'objectDescription': widget.preferenceDescription.isNotEmpty
+          ? widget.preferenceDescription
+          : null,
+      'petType': widget.petType,
+      'petSize': widget.petSize,
+      'petDescription': widget.petDescription,
       'paymentMethod': widget.paymentMethod,
     });
   }

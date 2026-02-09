@@ -29,9 +29,14 @@ class UpcomingTripCard extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(AppDimensions.paddingL),
         decoration: BoxDecoration(
-          color: AppColors.background,
+          color: (trip.isActive || trip.isInProgress)
+              ? AppColors.success.withOpacity(0.03)
+              : AppColors.background,
           borderRadius: BorderRadius.circular(AppDimensions.cardRadius),
-          border: Border.all(color: AppColors.border),
+          border: Border.all(
+            color: (trip.isActive || trip.isInProgress) ? AppColors.success : AppColors.border,
+            width: (trip.isActive || trip.isInProgress) ? 1.5 : 1,
+          ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
