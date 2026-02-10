@@ -197,14 +197,37 @@ class _TaximeterWidgetState extends State<TaximeterWidget> {
                   ],
                 ),
                 const SizedBox(height: 2),
-                // Distancia + espera
-                Text(
-                  '${session.totalDistanceKm.toStringAsFixed(1)} km'
-                  '${session.totalWaitMinutes > 0.5 ? ' · ${session.totalWaitMinutes.round()} min espera' : ''}',
-                  style: AppTextStyles.caption.copyWith(
-                    color: AppColors.textSecondary,
-                    fontSize: 11,
-                  ),
+                // Distancia + espera + descuento
+                Row(
+                  children: [
+                    Text(
+                      '${session.totalDistanceKm.toStringAsFixed(1)} km'
+                      '${session.totalWaitMinutes > 0.5 ? ' · ${session.totalWaitMinutes.round()} min espera' : ''}',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textSecondary,
+                        fontSize: 11,
+                      ),
+                    ),
+                    if (session.discountPercent > 0) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: AppColors.success.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '-${(session.discountPercent * 100).round()}%',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.success,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),

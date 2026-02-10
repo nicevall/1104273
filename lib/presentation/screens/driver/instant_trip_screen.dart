@@ -14,6 +14,7 @@ import '../../../data/models/trip_model.dart';
 import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/google_places_service.dart';
+import 'package:google_maps_webservice/places.dart' as gmaps;
 import '../../../data/services/google_directions_service.dart';
 import '../../../data/services/pricing_service.dart';
 import '../../../data/services/location_cache_service.dart';
@@ -67,8 +68,7 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
   bool _allowsLuggage = true;
   bool _allowsPets = true; // Instantáneo: acepta todo para máximas solicitudes
   String _chatLevel = 'moderado';
-  int _maxWaitMinutes = 5;
-  final _notesController = TextEditingController();
+  int _maxWaitMinutes = 2;
 
   // === Estado ===
   VehicleModel? _vehicle;
@@ -122,7 +122,6 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
   void dispose() {
     _destController.dispose();
     _destFocusNode.dispose();
-    _notesController.dispose();
     _searchDebounce?.cancel();
     _placesService.dispose();
     super.dispose();
@@ -248,7 +247,14 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
 
     _searchDebounce = Timer(const Duration(milliseconds: 400), () async {
       try {
-        final results = await _placesService.searchPlaces(query: query);
+        gmaps.Location? loc;
+        if (_originLatitude != null && _originLongitude != null) {
+          loc = gmaps.Location(lat: _originLatitude!, lng: _originLongitude!);
+        }
+        final results = await _placesService.searchPlaces(
+          query: query,
+          location: loc,
+        );
         if (mounted) {
           setState(() {
             _destSuggestions = results;
@@ -392,9 +398,7 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
       allowsPets: _allowsPets,
       chatLevel: _chatLevel,
       maxWaitMinutes: _maxWaitMinutes,
-      additionalNotes: _notesController.text.trim().isNotEmpty
-          ? _notesController.text.trim()
-          : null,
+      additionalNotes: null,
       createdAt: DateTime.now(),
     );
 
@@ -868,7 +872,10 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
       _destController.text = 'UIDE Loja';
       _destSuggestions = [];
       _destFocusNode.unfocus();
+      // Avanzar directamente a preferencias (igual que "Confirmar Ruta")
+      _routeConfirmed = true;
     });
+    _calculateFare();
   }
 
   // ============================================================
@@ -1002,87 +1009,10 @@ class _InstantTripScreenState extends State<InstantTripScreen> {
                   children: [
                     _buildWaitTimeChip(1),
                     const SizedBox(width: 8),
+                    _buildWaitTimeChip(2),
+                    const SizedBox(width: 8),
                     _buildWaitTimeChip(3),
-                    const SizedBox(width: 8),
-                    _buildWaitTimeChip(5),
-                    const SizedBox(width: 8),
-                    _buildWaitTimeChip(7),
                   ],
-                ),
-
-                const SizedBox(height: 24),
-
-                // Additional notes
-                _buildSectionHeader(
-                    'Notas adicionales', Icons.note_outlined),
-                const SizedBox(height: 4),
-                Text(
-                  'Opcional — información extra para tus pasajeros',
-                  style: AppTextStyles.caption.copyWith(
-                    color: AppColors.textTertiary,
-                    fontSize: 11,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextFormField(
-                  controller: _notesController,
-                  maxLength: 150,
-                  maxLines: 3,
-                  decoration: InputDecoration(
-                    hintText:
-                        'Ej: Salgo puntual, paso por la av. principal...',
-                    hintStyle: AppTextStyles.body2.copyWith(
-                      color: AppColors.textTertiary,
-                    ),
-                    filled: true,
-                    fillColor: _notesController.text.isNotEmpty
-                        ? AppColors.primary.withOpacity(0.05)
-                        : AppColors.inputFill,
-                    prefixIcon: Padding(
-                      padding: const EdgeInsets.only(
-                          left: 12, bottom: 36),
-                      child: Icon(
-                        _notesController.text.isNotEmpty
-                            ? Icons.edit_note
-                            : Icons.note_alt_outlined,
-                        size: 20,
-                        color: _notesController.text.isNotEmpty
-                            ? AppColors.primary
-                            : AppColors.textTertiary,
-                      ),
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(
-                          AppDimensions.radiusM),
-                      borderSide: const BorderSide(
-                          color: AppColors.inputBorder),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(
-                          AppDimensions.radiusM),
-                      borderSide: BorderSide(
-                        color: _notesController.text.isNotEmpty
-                            ? AppColors.primary.withOpacity(0.5)
-                            : AppColors.inputBorder,
-                        width: _notesController.text.isNotEmpty
-                            ? 1.5
-                            : 1,
-                      ),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(
-                          AppDimensions.radiusM),
-                      borderSide: const BorderSide(
-                          color: AppColors.primary, width: 2),
-                    ),
-                    counterStyle: AppTextStyles.caption.copyWith(
-                      color: _notesController.text.length > 120
-                          ? AppColors.warning
-                          : AppColors.textSecondary,
-                    ),
-                  ),
-                  style: AppTextStyles.body2,
-                  onChanged: (_) => setState(() {}),
                 ),
 
                 const SizedBox(height: 8),

@@ -4,17 +4,21 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../data/models/trip_model.dart';
-import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/location_cache_service.dart';
+import '../../../data/services/rating_service.dart';
 import '../../../data/services/trips_service.dart';
 import '../../blocs/auth/auth_bloc.dart';
+import '../../blocs/auth/auth_event.dart';
 import '../../blocs/auth/auth_state.dart';
 import '../../blocs/trip/trip_bloc.dart';
 import '../../blocs/trip/trip_event.dart';
@@ -24,9 +28,9 @@ import '../../widgets/home/role_switcher.dart';
 import '../../widgets/home/search_bar_widget.dart';
 import '../../widgets/home/recent_place_card.dart';
 import '../../widgets/home/location_permission_banner.dart';
+import '../../widgets/home/notification_permission_banner.dart';
+import '../../../data/services/notification_service.dart';
 import '../../widgets/driver/trip_type_options.dart';
-import '../../widgets/driver/vehicle_info_card.dart';
-import '../../widgets/driver/upcoming_trip_card.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
@@ -50,15 +54,19 @@ class _HomeScreenState extends State<HomeScreen> {
   // Rol activo actual (para usuarios con rol "ambos")
   late String _activeRole;
 
-  // Lista de lugares recientes (se cargará desde Firebase cuando haya historial)
-  // Por ahora está vacía - solo se mostrará cuando el usuario tenga historial real
-  final List<RecentPlace> _recentPlaces = [];
+  // Lista de lugares recientes (cargados desde Firestore)
+  List<RecentPlace> _recentPlaces = [];
 
   // Key para refrescar el banner de ubicación
   final GlobalKey<State> _locationBannerKey = GlobalKey();
 
   // Flag para evitar doble redirect
   bool _hasCheckedActiveTrip = false;
+
+  // Flag para evitar doble navegación (múltiples taps)
+  bool _isNavigating = false;
+
+  static const String _activeRolePrefKey = 'uniride_active_role';
 
   @override
   void initState() {
@@ -72,12 +80,16 @@ class _HomeScreenState extends State<HomeScreen> {
       } else if (widget.activeRole == 'pasajero') {
         _activeRole = 'pasajero';
       } else {
-        // Fallback: Si es "ambos", inicia como pasajero por defecto
         _activeRole = widget.userRole == 'ambos' ? 'pasajero' : widget.userRole;
       }
     } else {
-      // Si es "ambos", inicia como pasajero por defecto
+      // Valor temporal hasta que se cargue de SharedPreferences
       _activeRole = widget.userRole == 'ambos' ? 'pasajero' : widget.userRole;
+    }
+
+    // Si es "ambos" y no viene activeRole explícito, restaurar rol guardado
+    if (widget.userRole == 'ambos' && widget.activeRole == null) {
+      _loadSavedRole();
     }
 
     // Cargar viajes si inicia como conductor
@@ -85,8 +97,38 @@ class _HomeScreenState extends State<HomeScreen> {
       _loadDriverTrips();
     }
 
+    // Verificar si el usuario está baneado o bloqueado
+    _checkBanStatus();
+
     // Auto-detectar viaje activo (conductor o pasajero) al abrir la app
     _checkAndRedirectActiveTrip();
+
+    // Solicitar permiso de notificaciones (Android 13+, solo una vez)
+    NotificationService().requestPermissionIfNeeded();
+
+    // Cargar destinos recientes del pasajero desde Firestore
+    _loadRecentPlaces();
+  }
+
+  /// Carga el último rol seleccionado desde SharedPreferences
+  Future<void> _loadSavedRole() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedRole = prefs.getString(_activeRolePrefKey);
+    if (savedRole != null && mounted) {
+      // Validar que el rol guardado es válido
+      if (savedRole == 'conductor' && widget.hasVehicle) {
+        setState(() => _activeRole = 'conductor');
+        _loadDriverTrips();
+      } else if (savedRole == 'pasajero') {
+        setState(() => _activeRole = 'pasajero');
+      }
+    }
+  }
+
+  /// Persiste el rol activo en SharedPreferences
+  Future<void> _saveActiveRole(String role) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_activeRolePrefKey, role);
   }
 
   void _loadDriverTrips() {
@@ -95,11 +137,34 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Pull-to-refresh para pasajero: recarga estado de ubicación y UI
+  /// Pull-to-refresh para pasajero: recarga estado de ubicación y recientes
   Future<void> _refreshPassengerHome() async {
+    await _loadRecentPlaces();
     setState(() {});
     // Pequeño delay para feedback visual del refresh indicator
     await Future.delayed(const Duration(milliseconds: 500));
+  }
+
+  /// Carga destinos recientes del pasajero desde Firestore
+  Future<void> _loadRecentPlaces() async {
+    try {
+      final destinations = await TripsService()
+          .getRecentPassengerDestinations(widget.userId, limit: 5);
+      if (mounted && destinations.isNotEmpty) {
+        setState(() {
+          _recentPlaces = destinations
+              .map((d) => RecentPlace(
+                    name: d['name'] as String? ?? '',
+                    address: d['address'] as String? ?? '',
+                    latitude: (d['latitude'] as num?)?.toDouble() ?? 0,
+                    longitude: (d['longitude'] as num?)?.toDouble() ?? 0,
+                  ))
+              .toList();
+        });
+      }
+    } catch (e) {
+      debugPrint('Error cargando destinos recientes: $e');
+    }
   }
 
   /// Pull-to-refresh para conductor: recarga lista de viajes
@@ -107,6 +172,128 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadDriverTrips();
     // Pequeño delay para feedback visual del refresh indicator
     await Future.delayed(const Duration(milliseconds: 500));
+  }
+
+  /// Verifica si el usuario está baneado o bloqueado permanentemente
+  Future<void> _checkBanStatus() async {
+    try {
+      final user = await FirestoreService().getUser(widget.userId);
+      if (user == null || !mounted) return;
+
+      // ── Cuenta bloqueada permanentemente (3 strikes) ──
+      if (user.accountBlocked) {
+        _showBanDialog(
+          isPermanent: true,
+          strikes: user.paymentStrikes,
+        );
+        return;
+      }
+
+      // ── Suspensión temporal ──
+      if (user.bannedUntil != null) {
+        if (user.bannedUntil!.isAfter(DateTime.now())) {
+          // Todavía baneado
+          _showBanDialog(
+            isPermanent: false,
+            strikes: user.paymentStrikes,
+            bannedUntil: user.bannedUntil,
+          );
+        } else {
+          // Ban ya expiró → limpiar en Firestore
+          await FirestoreService().updateUserFields(widget.userId, {
+            'bannedUntil': null,
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error al verificar ban: $e');
+    }
+  }
+
+  /// Muestra un diálogo de ban/suspensión que no se puede cerrar
+  void _showBanDialog({
+    required bool isPermanent,
+    required int strikes,
+    DateTime? bannedUntil,
+  }) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
+          actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icono
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: AppColors.error.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  isPermanent ? Icons.block : Icons.timer_off_rounded,
+                  color: AppColors.error,
+                  size: 32,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Título
+              Text(
+                isPermanent ? 'Cuenta bloqueada' : 'Cuenta suspendida',
+                style: AppTextStyles.h3.copyWith(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+
+              // Mensaje
+              Text(
+                isPermanent
+                    ? 'Tu cuenta ha sido bloqueada permanentemente por múltiples faltas de pago (Strike $strikes/3).\n\nContacta a soporte para más información.'
+                    : 'Tu cuenta está suspendida hasta el ${DateFormat('d MMM yyyy, HH:mm', 'es').format(bannedUntil!)} por falta de pago.\n\nStrike $strikes/3.',
+                textAlign: TextAlign.center,
+                style: AppTextStyles.body2.copyWith(
+                  color: AppColors.textSecondary,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+          actionsAlignment: MainAxisAlignment.center,
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  context.read<AuthBloc>().add(const LogoutEvent());
+                },
+                icon: const Icon(Icons.logout, size: 18),
+                label: const Text(
+                  'Cerrar sesión',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// Verifica si el usuario tiene un viaje activo (conductor o pasajero)
@@ -248,35 +435,301 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // Query 4: Buscar ride_request con status 'searching' (pasajero esperando)
+      // Query 4: Buscar ride_request con status 'searching' o 'reviewing' (pasajero esperando)
       final searchingReqSnap = await firestore
           .collection('ride_requests')
           .where('passengerId', isEqualTo: widget.userId)
-          .where('status', isEqualTo: 'searching')
-          .limit(1)
+          .where('status', whereIn: ['searching', 'reviewing'])
           .get();
 
       if (!mounted) return;
 
       if (searchingReqSnap.docs.isNotEmpty) {
-        debugPrint('🔄 Auto-redirect pasajero: searching → pantalla principal (aún buscando)');
-        // No redirigir al waiting screen porque necesita datos extra que no tenemos aquí
-        // El pasajero verá la home y podrá buscar de nuevo
+        // Separar solicitudes vigentes de expiradas
+        final now = Timestamp.now();
+        DocumentSnapshot? activeReq;
+
+        for (final doc in searchingReqSnap.docs) {
+          final data = doc.data() as Map<String, dynamic>;
+          final expiresAt = data['expiresAt'] as Timestamp?;
+
+          if (expiresAt != null && expiresAt.compareTo(now) <= 0) {
+            // Solicitud expirada → cancelar automáticamente
+            debugPrint('🧹 Auto-cancel solicitud expirada: ${doc.id}');
+            doc.reference.update({
+              'status': 'cancelled',
+              'completedAt': Timestamp.now(),
+            });
+          } else {
+            // Solicitud vigente
+            activeReq ??= doc;
+          }
+        }
+
+        if (activeReq != null) {
+          final reqData = activeReq.data() as Map<String, dynamic>;
+          debugPrint('🔄 Auto-redirect pasajero: ${reqData['status']} → waiting screen');
+          context.go('/trip/waiting', extra: {
+            'userId': widget.userId,
+            'origin': TripLocation.fromJson(reqData['origin'] as Map<String, dynamic>),
+            'destination': TripLocation.fromJson(reqData['destination'] as Map<String, dynamic>),
+            'pickupPoint': TripLocation.fromJson(reqData['pickupPoint'] as Map<String, dynamic>),
+            'referenceNote': reqData['referenceNote'] as String?,
+            'preferences': (reqData['preferences'] as List<dynamic>?)
+                ?.map((e) => e as String)
+                .toList() ?? const ['mochila'],
+            'objectDescription': reqData['objectDescription'] as String?,
+            'petType': reqData['petType'] as String?,
+            'petSize': reqData['petSize'] as String?,
+            'petDescription': reqData['petDescription'] as String?,
+            'paymentMethod': reqData['paymentMethod'] as String? ?? 'Efectivo',
+          });
+          return;
+        }
+      }
+
+      // === RESEÑAS PENDIENTES: Redirigir a calificación si hay viajes sin calificar ===
+      final pendingReview = await _findPendingReview();
+      if (pendingReview != null && mounted) {
+        final route = pendingReview.remove('route') as String? ?? '/trip/rate';
+        debugPrint('🔄 Auto-redirect: reseña pendiente → $route');
+        context.go(route, extra: pendingReview);
+        return;
       }
 
       debugPrint('🔄 Auto-redirect: no hay viajes activos');
+
+      // Limpiar ride_requests huérfanas del pasajero (viajes que no terminaron bien)
+      _cleanupOrphanedRideRequests();
     } catch (e) {
       debugPrint('❌ Error checking active trip: $e');
+    }
+  }
+
+  /// Buscar reseñas pendientes según el rol activo.
+  /// - Pasajero → buscar viajes donde fue dropped_off sin calificar al conductor → /trip/rate
+  /// - Conductor → buscar viajes con pasajeros dropped_off sin calificar → /driver/rate-passenger
+  /// Retorna {route, extra} o null si no hay pendientes.
+  Future<Map<String, dynamic>?> _findPendingReview() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final ratingService = RatingService();
+
+      if (_activeRole == 'pasajero') {
+        // === PASAJERO: Buscar viajes donde fue dropped_off sin calificar al conductor ===
+        final recentTrips = await firestore
+            .collection('trips')
+            .where('status', whereIn: ['completed', 'in_progress'])
+            .limit(15)
+            .get();
+
+        for (final tripDoc in recentTrips.docs) {
+          final tripData = tripDoc.data();
+          final passengers = tripData['passengers'] as List<dynamic>? ?? [];
+
+          for (final p in passengers) {
+            final pMap = p as Map<String, dynamic>;
+            final passengerId = pMap['userId'] as String? ?? '';
+            if (passengerId != widget.userId) continue;
+            if (pMap['status'] != 'dropped_off') continue;
+
+            final hasRated = await ratingService.hasRated(tripDoc.id, widget.userId);
+            if (!hasRated) {
+              final driverId = tripData['driverId'] as String? ?? '';
+              final fare = (pMap['price'] as num?)?.toDouble() ?? (pMap['meterFare'] as num?)?.toDouble();
+
+              debugPrint('⭐ Reseña pendiente (pasajero→conductor): trip=${tripDoc.id}');
+
+              // Limpiar ride_requests activas para que no bloqueen
+              final rideReqs = await firestore
+                  .collection('ride_requests')
+                  .where('passengerId', isEqualTo: widget.userId)
+                  .where('status', whereIn: ['searching', 'reviewing', 'accepted'])
+                  .get();
+              for (final req in rideReqs.docs) {
+                await req.reference.update({
+                  'status': 'completed',
+                  'completedAt': Timestamp.now(),
+                });
+              }
+
+              return {
+                'route': '/trip/rate',
+                'tripId': tripDoc.id,
+                'passengerId': widget.userId,
+                'driverId': driverId,
+                'ratingContext': tripData['status'] == 'completed' ? 'completed' : 'cancelled',
+                'fare': fare,
+              };
+            }
+          }
+        }
+      } else {
+        // === CONDUCTOR: Buscar viajes con pasajeros dropped_off sin calificar ===
+        final recentTrips = await firestore
+            .collection('trips')
+            .where('driverId', isEqualTo: widget.userId)
+            .where('status', whereIn: ['completed', 'in_progress'])
+            .limit(15)
+            .get();
+
+        for (final tripDoc in recentTrips.docs) {
+          final tripData = tripDoc.data();
+          final passengers = tripData['passengers'] as List<dynamic>? ?? [];
+
+          for (final p in passengers) {
+            final pMap = p as Map<String, dynamic>;
+            final passengerId = pMap['userId'] as String? ?? '';
+            if (passengerId.isEmpty) continue;
+            if (pMap['status'] != 'dropped_off') continue;
+
+            // Verificar si el CONDUCTOR ya calificó a ESTE pasajero en este viaje
+            // hasRated busca por tripId + raterId, pero para conductor que califica
+            // múltiples pasajeros necesitamos un check más específico
+            final existingRating = await firestore
+                .collection('ratings')
+                .where('tripId', isEqualTo: tripDoc.id)
+                .where('raterId', isEqualTo: widget.userId)
+                .where('ratedUserId', isEqualTo: passengerId)
+                .limit(1)
+                .get();
+
+            if (existingRating.docs.isEmpty) {
+              final passengerName = pMap['name'] as String? ?? '';
+              final fare = (pMap['price'] as num?)?.toDouble() ?? (pMap['meterFare'] as num?)?.toDouble() ?? 0.0;
+
+              debugPrint('⭐ Reseña pendiente (conductor→pasajero): trip=${tripDoc.id}, passenger=$passengerId');
+
+              return {
+                'route': '/driver/rate-passenger',
+                'tripId': tripDoc.id,
+                'driverId': widget.userId,
+                'passengerId': passengerId,
+                'passengerName': passengerName,
+                'fare': fare,
+              };
+            }
+          }
+        }
+      }
+
+      return null; // No hay reseñas pendientes
+    } catch (e) {
+      debugPrint('⚠️ Error buscando reseñas pendientes: $e');
+      return null;
+    }
+  }
+
+  /// Limpiar ride_requests que quedaron en status activo sin viaje correspondiente
+  /// Y limpiar passengers con userId vacío de trips del conductor
+  Future<void> _cleanupOrphanedRideRequests() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      // === 1. Limpiar ride_requests huérfanas del pasajero ===
+      final activeRequests = await firestore
+          .collection('ride_requests')
+          .where('passengerId', isEqualTo: widget.userId)
+          .where('status', whereIn: ['searching', 'reviewing', 'accepted'])
+          .get();
+
+      for (final doc in activeRequests.docs) {
+        final data = doc.data();
+        final expiresAt = data['expiresAt'] as Timestamp?;
+        final tripId = data['tripId'] as String?;
+
+        bool shouldCancel = false;
+
+        // Si ya expiró, cancelar
+        if (expiresAt != null && expiresAt.compareTo(Timestamp.now()) <= 0) {
+          shouldCancel = true;
+        }
+
+        // Si tiene tripId, verificar que el trip siga activo
+        if (!shouldCancel && tripId != null && tripId.isNotEmpty) {
+          final tripDoc = await firestore.collection('trips').doc(tripId).get();
+          if (!tripDoc.exists) {
+            shouldCancel = true;
+          } else {
+            final tripStatus = tripDoc.data()?['status'] as String? ?? '';
+            if (tripStatus == 'completed' || tripStatus == 'cancelled') {
+              shouldCancel = true;
+            }
+          }
+        }
+
+        if (shouldCancel) {
+          await doc.reference.update({
+            'status': 'cancelled',
+            'completedAt': Timestamp.now(),
+          });
+          debugPrint('🧹 Limpieza ride_request huérfana: ${doc.id}');
+        }
+      }
+
+      // === 2. Limpiar passengers con userId vacío de trips del conductor ===
+      if (widget.hasVehicle) {
+        await _cleanupEmptyPassengersFromTrips();
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error limpiando datos huérfanos: $e');
+    }
+  }
+
+  /// Elimina passengers con userId vacío de los viajes del conductor
+  Future<void> _cleanupEmptyPassengersFromTrips() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      // Buscar viajes activos del conductor
+      for (final status in ['active', 'in_progress']) {
+        final trips = await firestore
+            .collection('trips')
+            .where('driverId', isEqualTo: widget.userId)
+            .where('status', isEqualTo: status)
+            .get();
+
+        for (final tripDoc in trips.docs) {
+          final passengers = tripDoc.data()['passengers'] as List<dynamic>? ?? [];
+          final cleanPassengers = passengers.where((p) {
+            final pMap = p as Map<String, dynamic>;
+            final userId = pMap['userId'] as String? ?? '';
+            return userId.isNotEmpty;
+          }).toList();
+
+          if (cleanPassengers.length < passengers.length) {
+            final removed = passengers.length - cleanPassengers.length;
+            await tripDoc.reference.update({
+              'passengers': cleanPassengers,
+            });
+            debugPrint('🧹 Removidos $removed passengers vacíos del trip ${tripDoc.id}');
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error limpiando passengers vacíos: $e');
     }
   }
 
   /// Maneja el tap en "Viaje Instantáneo"
   /// Verifica si ya existe uno activo y redirige apropiadamente
   Future<void> _handleInstantTripTap() async {
+    // Evitar doble tap
+    if (_isNavigating) return;
+    _isNavigating = true;
+
+    // Verificar si hay reseñas pendientes antes de crear viaje
+    final pendingReview = await _findPendingReview();
+    if (pendingReview != null && mounted) {
+      _isNavigating = false;
+      _showPendingReviewBlockDialog(pendingReview);
+      return;
+    }
+
     // Verificar si ya hay un viaje instantáneo activo
     final activeTrip = await TripsService().getActiveInstantTrip(widget.userId);
 
-    if (!mounted) return;
+    if (!mounted) { _isNavigating = false; return; }
 
     if (activeTrip != null) {
       // Ya tiene un viaje activo, ir a la pantalla de viaje activo
@@ -287,17 +740,34 @@ class _HomeScreenState extends State<HomeScreen> {
         'userId': widget.userId,
       });
     }
+
+    Future.delayed(const Duration(seconds: 1), () {
+      _isNavigating = false;
+    });
   }
 
-  void _onRoleChanged(String newRole) {
-    // Si intenta cambiar a conductor y no tiene vehículo, mostrar aviso
+  Future<void> _onRoleChanged(String newRole) async {
+    // 1. Si intenta cambiar a conductor y no tiene vehículo, mostrar aviso
     if (newRole == 'conductor' && !widget.hasVehicle) {
       _showVehicleRequiredDialog();
       return;
     }
+
+    // 2. Verificar si hay viaje activo o reseña pendiente en el ROL ACTUAL
+    final blocking = await _checkActiveOrPendingTrip();
+    if (blocking != null && mounted) {
+      _showActiveTripBlockDialog(blocking);
+      return;
+    }
+
+    if (!mounted) return;
+
+    // 3. Cambio permitido
     setState(() {
       _activeRole = newRole;
     });
+    // Persistir el rol seleccionado
+    _saveActiveRole(newRole);
     // Cargar viajes al cambiar a conductor
     if (newRole == 'conductor') {
       _loadDriverTrips();
@@ -378,25 +848,315 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _onSearchTap() {
+  /// Verifica si el usuario tiene un viaje activo o una reseña pendiente
+  /// en su rol actual. Retorna un mensaje descriptivo si hay bloqueo, o null.
+  Future<String?> _checkActiveOrPendingTrip() async {
+    final firestore = FirebaseFirestore.instance;
+    final ratingService = RatingService();
+
+    try {
+      if (_activeRole == 'conductor') {
+        // === Conductor: buscar viajes activos ===
+
+        // 1. Trip active o in_progress
+        final activeTrips = await firestore
+            .collection('trips')
+            .where('driverId', isEqualTo: widget.userId)
+            .where('status', whereIn: ['active', 'in_progress'])
+            .limit(1)
+            .get();
+
+        if (activeTrips.docs.isNotEmpty) {
+          return 'Tienes un viaje activo como conductor. Finalízalo antes de cambiar de rol.';
+        }
+
+        // 2. Trip completed recientemente con reseñas pendientes
+        final recentCompleted = await firestore
+            .collection('trips')
+            .where('driverId', isEqualTo: widget.userId)
+            .where('status', isEqualTo: 'completed')
+            .orderBy('completedAt', descending: true)
+            .limit(5)
+            .get();
+
+        for (final tripDoc in recentCompleted.docs) {
+          final tripData = tripDoc.data();
+          final passengers = tripData['passengers'] as List<dynamic>? ?? [];
+
+          for (final p in passengers) {
+            final pMap = p as Map<String, dynamic>;
+            if (pMap['status'] == 'dropped_off' || pMap['status'] == 'picked_up') {
+              final hasRated = await ratingService.hasRated(tripDoc.id, widget.userId);
+              if (!hasRated) {
+                return 'Tienes una calificación pendiente. Califica a tus pasajeros antes de cambiar de rol.';
+              }
+            }
+          }
+        }
+      } else {
+        // === Pasajero: buscar viajes activos ===
+
+        // 1. RideRequest searching o accepted
+        final activeRequests = await firestore
+            .collection('ride_requests')
+            .where('passengerId', isEqualTo: widget.userId)
+            .where('status', whereIn: ['searching', 'accepted'])
+            .limit(1)
+            .get();
+
+        if (activeRequests.docs.isNotEmpty) {
+          return 'Tienes un viaje activo como pasajero. Finalízalo antes de cambiar de rol.';
+        }
+
+        // 2. Pasajero picked_up o accepted en trip in_progress
+        final inProgressTrips = await firestore
+            .collection('trips')
+            .where('status', isEqualTo: 'in_progress')
+            .get();
+
+        for (final tripDoc in inProgressTrips.docs) {
+          final passengers = tripDoc.data()['passengers'] as List<dynamic>? ?? [];
+          for (final p in passengers) {
+            final pMap = p as Map<String, dynamic>;
+            if (pMap['userId'] == widget.userId &&
+                (pMap['status'] == 'accepted' || pMap['status'] == 'picked_up')) {
+              return 'Estás en un viaje activo como pasajero. Espera a que finalice antes de cambiar de rol.';
+            }
+          }
+        }
+
+        // 3. Pasajero dropped_off sin calificar (reseña pendiente)
+        //    Buscar en trips completados e in_progress donde sea pasajero dropped_off
+        final recentTrips = await firestore
+            .collection('trips')
+            .where('status', whereIn: ['completed', 'in_progress'])
+            .limit(10)
+            .get();
+
+        for (final tripDoc in recentTrips.docs) {
+          final passengers = tripDoc.data()['passengers'] as List<dynamic>? ?? [];
+          for (final p in passengers) {
+            final pMap = p as Map<String, dynamic>;
+            if (pMap['userId'] == widget.userId && pMap['status'] == 'dropped_off') {
+              final hasRated = await ratingService.hasRated(tripDoc.id, widget.userId);
+              if (!hasRated) {
+                return 'Tienes una calificación pendiente. Califica al conductor antes de cambiar de rol.';
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error verificando viaje activo: $e');
+      // En caso de error, permitir el cambio (no bloquear por fallo de red)
+    }
+
+    return null; // No hay bloqueo
+  }
+
+  /// Muestra diálogo informativo cuando no se puede cambiar de rol
+  void _showActiveTripBlockDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.info_outline, color: AppColors.warning),
+            SizedBox(width: 12),
+            Expanded(child: Text('No puedes cambiar')),
+          ],
+        ),
+        content: Text(message),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text('Entendido'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _onSearchTap() async {
+    // Evitar doble tap
+    if (_isNavigating) return;
+    _isNavigating = true;
+
+    // Verificar si hay reseñas pendientes antes de buscar viaje
+    final pendingReview = await _findPendingReview();
+    if (pendingReview != null && mounted) {
+      _isNavigating = false;
+      _showPendingReviewBlockDialog(pendingReview);
+      return;
+    }
+
+    if (!mounted) { _isNavigating = false; return; }
+
     // Navegar a la pantalla de planificación de viaje
     context.push('/trip/plan', extra: {
       'userId': widget.userId,
       'userRole': _activeRole,
     });
+
+    Future.delayed(const Duration(seconds: 1), () {
+      _isNavigating = false;
+    });
   }
 
-  void _onRecentPlaceTap(RecentPlace place) {
-    // Navegar directamente al mapa con este destino
-    context.push('/trip/plan', extra: {
-      'userId': widget.userId,
-      'userRole': _activeRole,
-      'destination': {
-        'name': place.name,
-        'address': place.address,
-        'latitude': place.latitude,
-        'longitude': place.longitude,
-      },
+  /// Muestra diálogo cuando el usuario intenta crear viaje pero tiene reseñas pendientes
+  void _showPendingReviewBlockDialog(Map<String, dynamic> pendingReview) {
+    final isDriver = _activeRole == 'conductor';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.rate_review, color: AppColors.warning),
+            const SizedBox(width: 12),
+            const Expanded(child: Text('Reseña pendiente')),
+          ],
+        ),
+        content: Text(
+          isDriver
+              ? 'Tienes pasajeros pendientes por calificar de viajes anteriores. Completa tus calificaciones antes de iniciar un nuevo viaje.'
+              : 'Tienes un conductor pendiente por calificar de un viaje anterior. Completa tu calificación antes de buscar un nuevo viaje.',
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    side: const BorderSide(color: AppColors.border),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: Text(
+                    'Más tarde',
+                    style: AppTextStyles.button.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    final route = pendingReview.remove('route') as String? ?? '/trip/rate';
+                    context.go(route, extra: pendingReview);
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: Text(
+                    'Calificar ahora',
+                    style: AppTextStyles.button.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _onRecentPlaceTap(RecentPlace place) async {
+    // Evitar doble tap
+    if (_isNavigating) return;
+    _isNavigating = true;
+
+    // Verificar reseñas pendientes antes de buscar viaje
+    final pendingReview = await _findPendingReview();
+    if (pendingReview != null && mounted) {
+      _isNavigating = false;
+      _showPendingReviewBlockDialog(pendingReview);
+      return;
+    }
+
+    if (!mounted) { _isNavigating = false; return; }
+
+    try {
+      // Intentar usar ubicación cacheada primero (instantáneo si hay caché fresco)
+      final cached = LocationCacheService().cachedLocation;
+      double lat;
+      double lng;
+
+      if (cached != null && cached.isFresh(maxAgeMinutes: 3)) {
+        lat = cached.latitude;
+        lng = cached.longitude;
+      } else {
+        // Si no hay caché fresco, obtener GPS con timeout corto
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium,
+        ).timeout(const Duration(seconds: 8));
+        lat = pos.latitude;
+        lng = pos.longitude;
+      }
+
+      if (!mounted) { _isNavigating = false; return; }
+
+      context.push('/trip/confirm-pickup', extra: {
+        'userId': widget.userId,
+        'userRole': _activeRole,
+        'origin': {
+          'name': 'Mi ubicación',
+          'latitude': lat,
+          'longitude': lng,
+        },
+        'destination': {
+          'name': place.name,
+          'address': place.address,
+          'latitude': place.latitude,
+          'longitude': place.longitude,
+        },
+      });
+    } catch (e) {
+      // Fallback: ir a plan trip si no hay GPS
+      if (!mounted) { _isNavigating = false; return; }
+      context.push('/trip/plan', extra: {
+        'userId': widget.userId,
+        'userRole': _activeRole,
+        'destination': {
+          'name': place.name,
+          'address': place.address,
+          'latitude': place.latitude,
+          'longitude': place.longitude,
+        },
+      });
+    }
+
+    // Resetear flag después de un breve delay para permitir navegación futura
+    Future.delayed(const Duration(seconds: 1), () {
+      _isNavigating = false;
     });
   }
 
@@ -455,6 +1215,11 @@ class _HomeScreenState extends State<HomeScreen> {
             },
           ),
 
+          // Banner de notificaciones desactivadas
+          NotificationPermissionBanner(
+            onPermissionGranted: () => setState(() {}),
+          ),
+
           // Header con logo y avatar
           _buildHeader(),
 
@@ -502,49 +1267,6 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 24),
           ],
 
-          // Mensaje cuando no hay historial
-          if (_recentPlaces.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: AppColors.tertiary.withOpacity(0.5),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.explore_outlined,
-                      color: AppColors.textSecondary,
-                      size: 32,
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Sin viajes recientes',
-                            style: AppTextStyles.body1.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Tus destinos frecuentes aparecerán aquí',
-                            style: AppTextStyles.caption.copyWith(
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
             const SizedBox(height: 24),
 
             // Link al historial de viajes
@@ -566,6 +1288,16 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Banner de ubicación desactivada
+            LocationPermissionBanner(
+              onPermissionGranted: () => setState(() {}),
+            ),
+
+            // Banner de notificaciones desactivadas
+            NotificationPermissionBanner(
+              onPermissionGranted: () => setState(() {}),
+            ),
+
             // Header con logo y avatar
             _buildHeader(),
 
@@ -591,184 +1323,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          const SizedBox(height: 20),
-
-          // Info del vehículo
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: FutureBuilder<VehicleModel?>(
-              future: FirestoreService().getUserVehicle(widget.userId),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const SizedBox.shrink();
-                }
-                if (snapshot.hasData && snapshot.data != null) {
-                  return VehicleInfoCard(vehicle: snapshot.data!);
-                }
-                return const SizedBox.shrink();
-              },
-            ),
-          ),
-
-          const SizedBox(height: 24),
-
-          // Sección "Mis viajes programados"
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            child: Text(
-              'Mis viajes',
-              style: AppTextStyles.h3,
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
-          // Lista de viajes (con auto-refresh tras cambios de estado)
-          BlocListener<TripBloc, TripState>(
-            listenWhen: (prev, curr) =>
-                curr is TripStarted ||
-                curr is TripCompleted ||
-                curr is TripCancelled ||
-                curr is TripCreated,
-            listener: (context, state) {
-              // Re-cargar viajes cuando cambia el estado de algún viaje
-              _loadDriverTrips();
-            },
-            child: BlocBuilder<TripBloc, TripState>(
-              buildWhen: (prev, curr) =>
-                  curr is TripLoading ||
-                  curr is DriverTripsLoaded ||
-                  curr is TripError ||
-                  curr is TripInitial,
-              builder: (context, state) {
-                if (state is TripLoading) {
-                  return const Padding(
-                    padding: EdgeInsets.all(40),
-                    child: Center(
-                      child: CircularProgressIndicator(
-                        color: AppColors.primary,
-                      ),
-                    ),
-                  );
-                }
-
-                if (state is DriverTripsLoaded) {
-                  final trips = state.trips;
-
-                  if (trips.isEmpty) {
-                    return _buildEmptyTripsState();
-                  }
-
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Column(
-                      children: [
-                        ListView.separated(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: trips.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 12),
-                          itemBuilder: (context, index) {
-                            final trip = trips[index];
-                            return UpcomingTripCard(
-                              trip: trip,
-                              onTap: () {
-                                if (trip.isInProgress) {
-                                  // Viaje en progreso → GPS screen
-                                  context.go(
-                                    '/driver/active-trip/${trip.tripId}',
-                                  );
-                                } else if (trip.isActive) {
-                                  // Buscando pasajeros → pantalla de solicitudes
-                                  context.go(
-                                    '/driver/active-requests/${trip.tripId}',
-                                  );
-                                } else {
-                                  context.push(
-                                    '/driver/trip/${trip.tripId}',
-                                  );
-                                }
-                              },
-                            );
-                          },
-                        ),
-                        // TODO: Quitar este botón después del desarrollo
-                        const SizedBox(height: 16),
-                        TextButton.icon(
-                          onPressed: () async {
-                            final confirmed = await showDialog<bool>(
-                              context: context,
-                              builder: (ctx) => AlertDialog(
-                                title: const Text('Eliminar viajes'),
-                                content: Text(
-                                  '¿Eliminar los ${trips.length} viajes? Esta acción no se puede deshacer.',
-                                ),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(ctx, false),
-                                    child: const Text('Cancelar'),
-                                  ),
-                                  ElevatedButton(
-                                    onPressed: () => Navigator.pop(ctx, true),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: AppColors.error,
-                                    ),
-                                    child: const Text('Eliminar'),
-                                  ),
-                                ],
-                              ),
-                            );
-                            if (confirmed == true) {
-                              final count = await TripsService()
-                                  .deleteAllDriverTrips(widget.userId);
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('$count viajes eliminados'),
-                                    backgroundColor: AppColors.success,
-                                  ),
-                                );
-                                _loadDriverTrips();
-                              }
-                            }
-                          },
-                          icon: const Icon(Icons.delete_sweep, size: 16),
-                          label: const Text('Eliminar todos'),
-                          style: TextButton.styleFrom(
-                            foregroundColor: AppColors.error,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                if (state is TripError) {
-                  // Si el error es de índice o Firestore, mostrar empty state
-                  if (state.error.contains('index') ||
-                      state.error.contains('FAILED_PRECONDITION')) {
-                    return _buildEmptyTripsState();
-                  }
-                  return Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Center(
-                      child: Text(
-                        'No se pudieron cargar los viajes',
-                        style: AppTextStyles.body2.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ),
-                  );
-                }
-
-                // Estado inicial - mostrar empty state
-                return _buildEmptyTripsState();
-              },
-            ),
-          ),
-
-            const SizedBox(height: 24),
+          const SizedBox(height: 32),
 
             // Link al historial de viajes
             _buildHistorialLink(),
@@ -827,43 +1382,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildEmptyTripsState() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          color: AppColors.tertiary.withOpacity(0.5),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          children: [
-            Icon(
-              Icons.route_outlined,
-              color: AppColors.textSecondary,
-              size: 48,
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'No tienes viajes programados',
-              style: AppTextStyles.body1.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Crea tu primer viaje y empieza a compartir gastos',
-              style: AppTextStyles.caption.copyWith(
-                color: AppColors.textSecondary,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
   Widget _buildHeader() {
     return Padding(
@@ -885,6 +1403,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onTap: () {
               context.push('/profile', extra: {
                 'userId': widget.userId,
+                'activeRole': _activeRole,
               });
             },
             child: Container(

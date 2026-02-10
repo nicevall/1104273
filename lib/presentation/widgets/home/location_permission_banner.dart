@@ -5,7 +5,6 @@
 
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 
@@ -60,17 +59,18 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
   /// Verifica tanto el permiso como si el servicio de ubicación está activo
   Future<void> _checkLocationStatus() async {
     try {
-      // Verificar el permiso de ubicación primero
-      final permissionStatus = await Permission.location.status;
-
       // Verificar si el servicio de ubicación está habilitado
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+
+      // Usar Geolocator para verificar permisos (más confiable que permission_handler)
+      final geoPermission = await Geolocator.checkPermission();
 
       // Determinar el tipo de problema
       String issueType = 'permission';
       bool shouldShowBanner = false;
 
-      if (!permissionStatus.isGranted) {
+      if (geoPermission == LocationPermission.denied ||
+          geoPermission == LocationPermission.deniedForever) {
         // Falta el permiso
         issueType = 'permission';
         shouldShowBanner = true;
@@ -126,17 +126,18 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
       return;
     }
 
-    // Verificar el estado actual del permiso
-    final currentStatus = await Permission.location.status;
+    // Verificar el estado actual del permiso vía Geolocator
+    final geoPermission = await Geolocator.checkPermission();
 
-    if (currentStatus.isPermanentlyDenied) {
+    if (geoPermission == LocationPermission.deniedForever) {
       // Si fue denegado permanentemente, abrir configuración de la app
-      await openAppSettings();
-    } else {
+      await Geolocator.openAppSettings();
+    } else if (geoPermission == LocationPermission.denied) {
       // Solicitar permiso nativo de ubicación
-      final status = await Permission.location.request();
+      final result = await Geolocator.requestPermission();
 
-      if (status.isGranted) {
+      if (result == LocationPermission.whileInUse ||
+          result == LocationPermission.always) {
         if (mounted) {
           setState(() {
             _isVisible = false;
@@ -144,9 +145,8 @@ class _LocationPermissionBannerState extends State<LocationPermissionBanner>
           });
           widget.onPermissionGranted?.call();
         }
-      } else if (status.isPermanentlyDenied) {
-        // Si fue denegado permanentemente, abrir configuración
-        await openAppSettings();
+      } else if (result == LocationPermission.deniedForever) {
+        await Geolocator.openAppSettings();
       }
     }
   }

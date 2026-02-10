@@ -16,6 +16,8 @@ import '../../../data/services/trips_service.dart';
 import '../../../data/services/ride_requests_service.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/google_directions_service.dart';
+import '../../../data/services/tts_service.dart';
+import '../../../core/utils/car_marker_generator.dart';
 
 class AcceptPassengerScreen extends StatefulWidget {
   final String tripId;
@@ -36,8 +38,10 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
   final _requestsService = RideRequestsService();
   final _firestoreService = FirestoreService();
   final _directionsService = GoogleDirectionsService();
+  final _ttsService = TtsService();
 
   GoogleMapController? _mapController;
+  BitmapDescriptor? _carIcon;
 
   TripModel? _trip;
   RideRequestModel? _request;
@@ -46,12 +50,25 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
 
   bool _isLoading = true;
   bool _isProcessing = false;
+  bool _isReviewing = false; // Si marcamos la solicitud como reviewing en Firestore
+  bool _detailsExpanded = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
     _loadData();
+  }
+
+  @override
+  void dispose() {
+    // Parar TTS al salir
+    _ttsService.stop();
+    // Si salimos sin aceptar, restaurar a searching
+    if (_isReviewing && !_isProcessing) {
+      _requestsService.unreviewRequest(widget.requestId);
+    }
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -90,8 +107,19 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
         return;
       }
 
+      // Verificar que passengerId no esté vacío (datos huérfanos)
+      if (request.passengerId.isEmpty) {
+        debugPrint('⚠️ AcceptPassenger: solicitud ${widget.requestId} tiene passengerId vacío');
+        setState(() {
+          _error = 'Solicitud inválida (datos incompletos)';
+          _isLoading = false;
+        });
+        return;
+      }
+
       // Cargar info del pasajero
       final user = await _firestoreService.getUser(request.passengerId);
+      debugPrint('🧑 AcceptPassenger: passengerId=${request.passengerId}, user=${user?.firstName} ${user?.lastName}, career=${user?.career}');
 
       // Calcular desvío
       DeviationInfo? deviation;
@@ -107,14 +135,26 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
         newPickup: request.pickupPoint,
       );
 
+      // Cargar ícono del carro
+      final carIcon = await CarMarkerGenerator.generate(size: 120);
+
       if (mounted) {
         setState(() {
           _trip = trip;
           _request = request;
           _passengerUser = user;
           _deviationInfo = deviation;
+          _carIcon = carIcon;
           _isLoading = false;
         });
+
+        // Marcar solicitud como "reviewing" para pausar timer del pasajero
+        _requestsService.reviewRequest(widget.requestId).then((_) {
+          _isReviewing = true;
+        }).catchError((_) {});
+
+        // Leer detalles con TTS
+        _speakRequestDetails(request, user);
       }
     } catch (e) {
       if (mounted) {
@@ -126,8 +166,60 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
     }
   }
 
+  /// Leer detalles de la solicitud con TTS
+  void _speakRequestDetails(RideRequestModel request, UserModel? user) {
+    final buffer = StringBuffer();
+
+    // 1. Carrera del pasajero
+    if (user?.career != null && user!.career.isNotEmpty) {
+      buffer.write('Estudiante de ${user.career}.');
+    }
+
+    // 2. Referencia del punto de recogida
+    if (request.referenceNote != null && request.referenceNote!.isNotEmpty) {
+      buffer.write(' Referencia: ${request.referenceNote}.');
+    }
+
+    // 3. Objeto grande
+    if (request.hasLargeObject) {
+      if (request.objectDescription != null &&
+          request.objectDescription!.isNotEmpty) {
+        buffer.write(' Lleva ${request.objectDescription}.');
+      } else {
+        buffer.write(' Lleva objeto grande.');
+      }
+    }
+
+    // 4. Mascota con detalles
+    if (request.hasPet) {
+      switch (request.petType) {
+        case 'perro':
+          buffer.write(' Lleva perro');
+          if (request.petSize != null && request.petSize!.isNotEmpty) {
+            buffer.write(' tamaño ${request.petSize}');
+          }
+          buffer.write('.');
+          break;
+        case 'gato':
+          buffer.write(' Lleva gato.');
+          break;
+        case 'otro':
+          buffer.write(' Lleva de mascota un ${request.petDescription}.');
+          break;
+      }
+    }
+
+    final text = buffer.toString().trim();
+    if (text.isNotEmpty) {
+      _ttsService.speakRequest(text);
+    }
+  }
+
   void _acceptPassenger() async {
     if (_trip == null || _request == null) return;
+
+    // Parar TTS inmediatamente al querer aceptar
+    _ttsService.stop();
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -326,27 +418,15 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
   }
 
   Widget _buildMap() {
-    // Crear markers
+    // Markers: solo conductor (origen/posición actual) y pickup del pasajero
     final markers = <Marker>{
-      // Origen del conductor (turquesa)
+      // Posición del conductor (ícono carro)
       Marker(
-        markerId: const MarkerId('origin'),
+        markerId: const MarkerId('driver'),
         position: LatLng(_trip!.origin.latitude, _trip!.origin.longitude),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
-        infoWindow: InfoWindow(title: 'Tu origen', snippet: _trip!.origin.name),
-      ),
-      // Destino (verde)
-      Marker(
-        markerId: const MarkerId('destination'),
-        position: LatLng(
-          _trip!.destination.latitude,
-          _trip!.destination.longitude,
-        ),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-        infoWindow: InfoWindow(
-          title: 'Destino',
-          snippet: _trip!.destination.name,
-        ),
+        icon: _carIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
+        anchor: const Offset(0.5, 0.5),
+        infoWindow: const InfoWindow(title: 'Tu ubicación'),
       ),
       // Pickup del pasajero (naranja)
       Marker(
@@ -363,26 +443,8 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
       ),
     };
 
-    // Crear polylines
+    // Polyline de ruta con pickup (turquesa) — solo esta, sin la gris
     final polylines = <Polyline>{};
-
-    // Ruta original (gris punteado)
-    if (_deviationInfo?.originalRoute != null) {
-      polylines.add(
-        Polyline(
-          polylineId: const PolylineId('original'),
-          points: _deviationInfo!.originalRoute.polylinePoints,
-          color: Colors.grey.withOpacity(0.5),
-          width: 4,
-          patterns: [
-            PatternItem.dash(20),
-            PatternItem.gap(10),
-          ],
-        ),
-      );
-    }
-
-    // Ruta con pickup (turquesa sólido)
     if (_deviationInfo?.routeWithPickup != null) {
       polylines.add(
         Polyline(
@@ -394,25 +456,40 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
       );
     }
 
-    // Calcular bounds enfocados en la zona del desvío (pickup del pasajero)
-    // En vez de mostrar todo el viaje, enfocamos en la ruta cercana al pickup
-    final deviationBounds = _calculateDeviationBounds();
+    // Bounds: conductor + pickup del pasajero
+    final driverLat = _trip!.origin.latitude;
+    final driverLng = _trip!.origin.longitude;
+    final pickupLat = _request!.pickupPoint.latitude;
+    final pickupLng = _request!.pickupPoint.longitude;
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(
+        driverLat < pickupLat ? driverLat : pickupLat,
+        driverLng < pickupLng ? driverLng : pickupLng,
+      ),
+      northeast: LatLng(
+        driverLat > pickupLat ? driverLat : pickupLat,
+        driverLng > pickupLng ? driverLng : pickupLng,
+      ),
+    );
 
     return GoogleMap(
       initialCameraPosition: CameraPosition(
         target: LatLng(
-          _request!.pickupPoint.latitude,
-          _request!.pickupPoint.longitude,
+          (driverLat + pickupLat) / 2,
+          (driverLng + pickupLng) / 2,
         ),
         zoom: 14,
       ),
       markers: markers,
       polylines: polylines,
+      // Padding inferior para que el bottom card no tape los markers
+      padding: const EdgeInsets.only(bottom: 280, top: 60),
       onMapCreated: (controller) {
         _mapController = controller;
         Future.delayed(const Duration(milliseconds: 300), () {
           controller.animateCamera(
-            CameraUpdate.newLatLngBounds(deviationBounds, 80),
+            CameraUpdate.newLatLngBounds(bounds, 80),
           );
         });
       },
@@ -422,252 +499,116 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
     );
   }
 
-  /// Calcula bounds enfocados en la zona del desvío:
-  /// Muestra el punto de pickup y la porción de ruta original cercana,
-  /// para que el conductor vea claramente cuánto se desvía.
-  LatLngBounds _calculateDeviationBounds() {
-    double minLat = double.infinity;
-    double maxLat = -double.infinity;
-    double minLng = double.infinity;
-    double maxLng = -double.infinity;
-
-    void expandBounds(double lat, double lng) {
-      if (lat < minLat) minLat = lat;
-      if (lat > maxLat) maxLat = lat;
-      if (lng < minLng) minLng = lng;
-      if (lng > maxLng) maxLng = lng;
-    }
-
-    final pickupLat = _request!.pickupPoint.latitude;
-    final pickupLng = _request!.pickupPoint.longitude;
-
-    // Siempre incluir el punto de pickup del pasajero
-    expandBounds(pickupLat, pickupLng);
-
-    // Encontrar el punto más cercano de la ruta ORIGINAL al pickup
-    // y tomar un segmento de puntos alrededor para mostrar la ruta base
-    if (_deviationInfo?.originalRoute != null) {
-      final originalPoints = _deviationInfo!.originalRoute.polylinePoints;
-      int closestIndex = 0;
-      double closestDist = double.infinity;
-
-      for (int i = 0; i < originalPoints.length; i++) {
-        final dx = originalPoints[i].latitude - pickupLat;
-        final dy = originalPoints[i].longitude - pickupLng;
-        final dist = dx * dx + dy * dy;
-        if (dist < closestDist) {
-          closestDist = dist;
-          closestIndex = i;
-        }
-      }
-
-      // Tomar ~30% de puntos alrededor del punto más cercano
-      // para mostrar un buen tramo de la ruta original
-      final segmentSize = (originalPoints.length * 0.3).round().clamp(10, 80);
-      final startIdx = (closestIndex - segmentSize ~/ 2).clamp(0, originalPoints.length - 1);
-      final endIdx = (closestIndex + segmentSize ~/ 2).clamp(0, originalPoints.length - 1);
-
-      for (int i = startIdx; i <= endIdx; i++) {
-        expandBounds(
-          originalPoints[i].latitude,
-          originalPoints[i].longitude,
-        );
-      }
-    }
-
-    // También incluir puntos cercanos de la ruta con pickup
-    // para ver cómo se desvía la turquesa respecto a la gris
-    if (_deviationInfo?.routeWithPickup != null) {
-      final pickupPoints = _deviationInfo!.routeWithPickup.polylinePoints;
-      int closestIndex = 0;
-      double closestDist = double.infinity;
-
-      for (int i = 0; i < pickupPoints.length; i++) {
-        final dx = pickupPoints[i].latitude - pickupLat;
-        final dy = pickupPoints[i].longitude - pickupLng;
-        final dist = dx * dx + dy * dy;
-        if (dist < closestDist) {
-          closestDist = dist;
-          closestIndex = i;
-        }
-      }
-
-      // Tomar un segmento alrededor del pickup en la ruta desviada
-      final segmentSize = (pickupPoints.length * 0.35).round().clamp(10, 100);
-      final startIdx = (closestIndex - segmentSize ~/ 2).clamp(0, pickupPoints.length - 1);
-      final endIdx = (closestIndex + segmentSize ~/ 2).clamp(0, pickupPoints.length - 1);
-
-      for (int i = startIdx; i <= endIdx; i++) {
-        expandBounds(
-          pickupPoints[i].latitude,
-          pickupPoints[i].longitude,
-        );
-      }
-    }
-
-    // Fallback si no hay polylines: incluir origen
-    if (_deviationInfo?.originalRoute == null &&
-        _deviationInfo?.routeWithPickup == null) {
-      expandBounds(
-        _trip!.origin.latitude,
-        _trip!.origin.longitude,
-      );
-    }
-
-    // Padding para que no queden los markers pegados al borde
-    const padding = 0.001; // ~100m aprox
-    return LatLngBounds(
-      southwest: LatLng(minLat - padding, minLng - padding),
-      northeast: LatLng(maxLat + padding, maxLng + padding),
-    );
-  }
-
   Widget _buildTopOverlay() {
     return Positioned(
       top: MediaQuery.of(context).padding.top + 8,
       left: 16,
-      right: 16,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          // Botón atrás
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.15),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                ),
-              ],
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.15),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
             ),
-            child: IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () => context.pop(),
-            ),
-          ),
-
-          // Badge de desvío
-          if (_deviationInfo != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppColors.warning,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.warning.withOpacity(0.4),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.add_road,
-                    color: Colors.white,
-                    size: 18,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'DESVÍO +${_deviationInfo!.deviationMinutes} MIN',
-                    style: AppTextStyles.caption.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-        ],
+          ],
+        ),
+        child: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => context.pop(),
+        ),
       ),
     );
   }
 
   Widget _buildBottomSheet() {
-    return DraggableScrollableSheet(
-      initialChildSize: 0.45,
-      minChildSize: 0.3,
-      maxChildSize: 0.85,
-      builder: (context, scrollController) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: AppColors.background,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black12,
-                blurRadius: 20,
-                offset: Offset(0, -5),
-              ),
-            ],
-          ),
-          child: ListView(
-            controller: scrollController,
-            padding: const EdgeInsets.all(20),
-            children: [
-              // Handle bar
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.divider,
-                    borderRadius: BorderRadius.circular(2),
+    final hasDetails = _hasExtraDetails();
+
+    return Positioned(
+      bottom: 0,
+      left: 0,
+      right: 0,
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius:
+              const BorderRadius.vertical(top: Radius.circular(24)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.12),
+              blurRadius: 20,
+              offset: const Offset(0, -5),
+            ),
+          ],
+        ),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Handle
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.divider,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 20),
+                const SizedBox(height: 14),
 
-              // Info del pasajero
-              _buildPassengerInfo(),
+                // — Fila pasajero: avatar + nombre + rating + timer
+                _buildPassengerRow(),
 
-              const SizedBox(height: 20),
-              const Divider(height: 1, color: AppColors.divider),
-              const SizedBox(height: 20),
+                const SizedBox(height: 12),
 
-              // Punto de recogida
-              _buildPickupInfo(),
+                // — Pickup compacto (una línea)
+                _buildPickupRow(),
 
-              const SizedBox(height: 20),
-              const Divider(height: 1, color: AppColors.divider),
-              const SizedBox(height: 20),
+                // — Chips rápidos de pago + preferencias
+                const SizedBox(height: 10),
+                _buildQuickChips(),
 
-              // Preferencias
-              _buildPreferencesInfo(),
+                // — "Ver detalles" / "Ocultar detalles" (solo si hay detalles)
+                if (hasDetails) ...[
+                  const SizedBox(height: 10),
+                  _buildToggleDetails(),
+                ],
 
-              const SizedBox(height: 20),
-              const Divider(height: 1, color: AppColors.divider),
-              const SizedBox(height: 20),
+                const SizedBox(height: 14),
 
-              // Método de pago y precio
-              _buildPaymentInfo(),
-
-              const SizedBox(height: 32),
-
-              // Botones de acción
-              _buildActionButtons(),
-
-              const SizedBox(height: 20),
-            ],
+                // — Botón "Agregar al viaje" siempre visible
+                _buildActionButton(),
+              ],
+            ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
-  Widget _buildPassengerInfo() {
+  bool _hasExtraDetails() {
+    return (_request!.referenceNote != null &&
+            _request!.referenceNote!.isNotEmpty) ||
+        _request!.hasLargeObject ||
+        _request!.hasPet ||
+        _request!.preferences.contains('mochila');
+  }
+
+  /// Fila compacta: avatar 48x48 + nombre + rating + carrera + timer
+  Widget _buildPassengerRow() {
     return Row(
       children: [
         // Avatar
         Container(
-          width: 60,
-          height: 60,
+          width: 48,
+          height: 48,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: AppColors.tertiary,
@@ -683,68 +624,76 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
                 : _buildAvatarPlaceholder(),
           ),
         ),
-        const SizedBox(width: 16),
+        const SizedBox(width: 12),
 
-        // Info
+        // Nombre + rating + carrera
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                _getFullName(),
-                style: AppTextStyles.h3,
-              ),
-              const SizedBox(height: 4),
-              if (_passengerUser?.rating != null)
-                Row(
-                  children: [
-                    const Icon(Icons.star, size: 16, color: AppColors.warning),
-                    const SizedBox(width: 4),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      _getShortName(),
+                      style: AppTextStyles.body1.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (_passengerUser?.rating != null) ...[
+                    const SizedBox(width: 8),
+                    const Icon(Icons.star, size: 14, color: AppColors.warning),
+                    const SizedBox(width: 2),
                     Text(
                       _passengerUser!.rating.toStringAsFixed(1),
-                      style: AppTextStyles.body2.copyWith(
-                        fontWeight: FontWeight.w500,
+                      style: AppTextStyles.caption.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
                       ),
                     ),
                   ],
-                ),
-              if (_passengerUser?.career != null) ...[
-                const SizedBox(height: 4),
+                ],
+              ),
+              if (_passengerUser?.career != null &&
+                  _passengerUser!.career.isNotEmpty)
                 Text(
                   _passengerUser!.career,
                   style: AppTextStyles.caption.copyWith(
                     color: AppColors.textSecondary,
                   ),
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ],
             ],
           ),
         ),
 
         // Timer de expiración
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
           decoration: BoxDecoration(
             color: _request!.minutesUntilExpiry <= 5
                 ? AppColors.error.withOpacity(0.1)
-                : AppColors.textSecondary.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(20),
+                : AppColors.textSecondary.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(16),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
                 Icons.timer,
-                size: 14,
+                size: 13,
                 color: _request!.minutesUntilExpiry <= 5
                     ? AppColors.error
                     : AppColors.textSecondary,
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: 3),
               Text(
                 '${_request!.minutesUntilExpiry} min',
                 style: AppTextStyles.caption.copyWith(
                   fontWeight: FontWeight.w600,
+                  fontSize: 11,
                   color: _request!.minutesUntilExpiry <= 5
                       ? AppColors.error
                       : AppColors.textSecondary,
@@ -757,6 +706,257 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
     );
   }
 
+  /// Fila de pickup: ícono naranja + nombre del punto
+  Widget _buildPickupRow() {
+    return Row(
+      children: [
+        Icon(Icons.place, color: Colors.orange.shade600, size: 18),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            _request!.pickupPoint.name,
+            style: AppTextStyles.body2.copyWith(
+              color: AppColors.textPrimary,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (_request!.referenceNote != null &&
+            _request!.referenceNote!.isNotEmpty) ...[
+          const SizedBox(width: 6),
+          Tooltip(
+            message: _request!.referenceNote!,
+            child: Icon(
+              Icons.info_outline,
+              size: 16,
+              color: AppColors.textSecondary.withOpacity(0.6),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Chips rápidos: método de pago + indicadores si lleva algo
+  Widget _buildQuickChips() {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 6,
+      children: [
+        // Método de pago
+        _buildMiniChip(
+          icon: _request!.paymentMethod == 'Efectivo'
+              ? Icons.payments_outlined
+              : Icons.phone_android,
+          label: _request!.paymentMethod,
+          bgColor: AppColors.success.withOpacity(0.1),
+          iconColor: AppColors.success,
+        ),
+        // Si tiene mascota
+        if (_request!.hasPet)
+          _buildMiniChip(
+            icon: null,
+            emoji: _request!.petIcon,
+            label: _getPetLabel(),
+            bgColor: Colors.amber.withOpacity(0.12),
+            iconColor: Colors.amber.shade800,
+          ),
+        // Si tiene objeto grande
+        if (_request!.hasLargeObject)
+          _buildMiniChip(
+            icon: Icons.inventory_2,
+            label: 'Objeto grande',
+            bgColor: AppColors.info.withOpacity(0.1),
+            iconColor: AppColors.info,
+          ),
+      ],
+    );
+  }
+
+  Widget _buildMiniChip({
+    IconData? icon,
+    String? emoji,
+    required String label,
+    required Color bgColor,
+    required Color iconColor,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (emoji != null)
+            Text(emoji, style: const TextStyle(fontSize: 12))
+          else if (icon != null)
+            Icon(icon, size: 14, color: iconColor),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: AppTextStyles.caption.copyWith(
+              fontWeight: FontWeight.w500,
+              fontSize: 11,
+              color: iconColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Toggle "Ver detalles" / "Ocultar detalles" con AnimatedCrossFade
+  Widget _buildToggleDetails() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Tap para expandir/colapsar
+        GestureDetector(
+          onTap: () => setState(() => _detailsExpanded = !_detailsExpanded),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  _detailsExpanded ? 'Ocultar detalles' : 'Ver detalles',
+                  style: AppTextStyles.body2.copyWith(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                AnimatedRotation(
+                  turns: _detailsExpanded ? 0.5 : 0.0,
+                  duration: const Duration(milliseconds: 200),
+                  child: const Icon(
+                    Icons.expand_more,
+                    size: 20,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // Contenido expandible
+        AnimatedCrossFade(
+          firstChild: const SizedBox.shrink(),
+          secondChild: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: _buildDetailsSection(),
+          ),
+          crossFadeState: _detailsExpanded
+              ? CrossFadeState.showSecond
+              : CrossFadeState.showFirst,
+          duration: const Duration(milliseconds: 250),
+        ),
+      ],
+    );
+  }
+
+  /// Sección de detalles — visible al tocar "Ver detalles"
+  Widget _buildDetailsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Detalles',
+          style: AppTextStyles.body1.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // Referencia del pickup
+        if (_request!.referenceNote != null &&
+            _request!.referenceNote!.isNotEmpty) ...[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.info_outline,
+                  size: 18, color: AppColors.textSecondary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Ref: ${_request!.referenceNote}',
+                  style: AppTextStyles.body2.copyWith(
+                    fontStyle: FontStyle.italic,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+        ],
+
+        // Mochila
+        if (_request!.preferences.contains('mochila')) ...[
+          Row(
+            children: [
+              const Icon(Icons.backpack_outlined,
+                  size: 18, color: AppColors.textSecondary),
+              const SizedBox(width: 8),
+              Text(
+                'Lleva mochila',
+                style: AppTextStyles.body2.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+        ],
+
+        // Objeto grande con descripción
+        if (_request!.hasLargeObject) ...[
+          Row(
+            children: [
+              const Icon(Icons.inventory_2,
+                  size: 18, color: AppColors.info),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  (_request!.objectDescription != null &&
+                          _request!.objectDescription!.isNotEmpty)
+                      ? 'Lleva: ${_request!.objectDescription}'
+                      : 'Lleva objeto grande',
+                  style: AppTextStyles.body2.copyWith(
+                    color: AppColors.info,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+        ],
+
+        // Mascota con detalles
+        if (_request!.hasPet) ...[
+          Row(
+            children: [
+              Text(_request!.petIcon,
+                  style: const TextStyle(fontSize: 16)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _getDetailedPetLabel(),
+                  style: AppTextStyles.body2.copyWith(
+                    color: Colors.amber.shade800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildAvatarPlaceholder() {
     final initials = _getInitials();
     return Container(
@@ -764,17 +964,23 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
       child: Center(
         child: Text(
           initials,
-          style: AppTextStyles.h3.copyWith(
+          style: AppTextStyles.body1.copyWith(
             color: AppColors.primary,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
     );
   }
 
-  String _getFullName() {
+  /// Nombre corto: "Juan P."
+  String _getShortName() {
     if (_passengerUser == null) return 'Pasajero';
-    return '${_passengerUser!.firstName} ${_passengerUser!.lastName}';
+    final first = _passengerUser!.firstName;
+    final lastInitial = _passengerUser!.lastName.isNotEmpty
+        ? '${_passengerUser!.lastName[0].toUpperCase()}.'
+        : '';
+    return '$first $lastInitial';
   }
 
   String _getInitials() {
@@ -788,345 +994,33 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
     return '$first$last';
   }
 
-  Widget _buildPickupInfo() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.warning.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(
-                Icons.place,
-                color: AppColors.warning,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Text(
-              'Punto de recogida',
-              style: AppTextStyles.body1.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.only(left: 44),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _request!.pickupPoint.name,
-                style: AppTextStyles.body2,
-              ),
-              if (_request!.referenceNote != null &&
-                  _request!.referenceNote!.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppColors.divider),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.info_outline,
-                        size: 16,
-                        color: AppColors.textSecondary,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _request!.referenceNote!,
-                          style: AppTextStyles.caption.copyWith(
-                            fontStyle: FontStyle.italic,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPreferencesInfo() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // Título de sección
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.info.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(
-                Icons.inventory_2_outlined,
-                color: AppColors.info,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Text(
-              '¿Qué lleva?',
-              style: AppTextStyles.body1.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-
-        // Mochila (si aplica)
-        if (_request!.preferences.contains('mochila'))
-          Padding(
-            padding: const EdgeInsets.only(left: 44, bottom: 8),
-            child: _buildPreferenceChip(
-              icon: Icons.backpack_outlined,
-              label: 'Mochila',
-              color: AppColors.textSecondary,
-            ),
-          ),
-
-        // Objeto grande + su descripción (juntos como bloque)
-        if (_request!.hasLargeObject) ...[
-          Padding(
-            padding: const EdgeInsets.only(left: 44),
-            child: _buildPreferenceChip(
-              icon: Icons.inventory_2,
-              label: 'Objeto grande',
-              color: AppColors.info,
-            ),
-          ),
-          if (_request!.objectDescription != null &&
-              _request!.objectDescription!.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.only(left: 44),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.info.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.description_outlined,
-                      size: 16,
-                      color: AppColors.info,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _request!.objectDescription!,
-                        style: AppTextStyles.caption,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-          const SizedBox(height: 8),
-        ],
-
-        // Mascota + su descripción (juntos como bloque)
-        if (_request!.hasPet) ...[
-          Padding(
-            padding: const EdgeInsets.only(left: 44),
-            child: _buildPetChip(),
-          ),
-          if (_request!.petType == 'otro' &&
-              _request!.petDescription != null &&
-              _request!.petDescription!.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.only(left: 44),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.amber.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.pets,
-                      size: 16,
-                      color: Colors.amber.shade800,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _request!.petDescription!,
-                        style: AppTextStyles.caption.copyWith(
-                          color: Colors.amber.shade800,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ],
-      ],
-    );
-  }
-
-  Widget _buildPreferenceChip({
-    required IconData icon,
-    required String label,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: color),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: AppTextStyles.caption.copyWith(
-              fontWeight: FontWeight.w500,
-              color: color,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPetChip() {
-    String label;
+  String _getPetLabel() {
     switch (_request!.petType) {
       case 'perro':
-        label = _request!.petSize != null
+        return _request!.petSize != null
             ? 'Perro (${_request!.petSize})'
             : 'Perro';
-        break;
       case 'gato':
-        label = 'Gato';
-        break;
+        return 'Gato';
       case 'otro':
-        label = 'Otra mascota';
-        break;
+        return 'Otra mascota';
       default:
-        label = 'Mascota';
+        return 'Mascota';
     }
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.amber.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(_request!.petIcon, style: const TextStyle(fontSize: 14)),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: AppTextStyles.caption.copyWith(
-              fontWeight: FontWeight.w500,
-              color: Colors.amber.shade800,
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
-  Widget _buildPaymentInfo() {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppColors.success.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(
-            _request!.paymentMethod == 'Efectivo'
-                ? Icons.payments_outlined
-                : Icons.phone_android,
-            color: AppColors.success,
-            size: 20,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Método de pago',
-              style: AppTextStyles.caption.copyWith(
-                color: AppColors.textSecondary,
-              ),
-            ),
-            Text(
-              _request!.paymentMethod,
-              style: AppTextStyles.body2.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const Spacer(),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: AppColors.primary.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.speed,
-                size: 16,
-                color: AppColors.primary,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                'Taximetro',
-                style: AppTextStyles.body2.copyWith(
-                  color: AppColors.primary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
+  String _getDetailedPetLabel() {
+    final base = _getPetLabel();
+    if (_request!.petType == 'otro' &&
+        _request!.petDescription != null &&
+        _request!.petDescription!.isNotEmpty) {
+      return '$base: ${_request!.petDescription}';
+    }
+    return base;
   }
 
-  Widget _buildActionButtons() {
+  /// Botón principal "Agregar al viaje"
+  Widget _buildActionButton() {
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton(
@@ -1134,7 +1028,7 @@ class _AcceptPassengerScreenState extends State<AcceptPassengerScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: AppColors.success,
           foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(vertical: 16),
+          padding: const EdgeInsets.symmetric(vertical: 14),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),

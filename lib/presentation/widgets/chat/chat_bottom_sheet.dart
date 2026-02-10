@@ -65,16 +65,18 @@ class _ChatBottomSheetState extends State<ChatBottomSheet> {
   // Mensajes rápidos por rol
   static const Map<String, List<String>> _quickMessages = {
     'pasajero': [
-      'Ya estoy aquí',
-      'Estoy saliendo',
-      '5 minutos',
-      '¿Dónde estás?',
+      'Ya estoy afuera 👋',
+      'Estoy saliendo, 2 min',
+      'Soy el de mochila',
+      '¿Ya estás cerca?',
+      '¿Puedes esperarme?',
     ],
     'conductor': [
-      'Ya llegué',
-      'Estoy en camino',
-      'Espérame 2 min',
-      'No te encuentro',
+      'Estoy afuera 🚗',
+      'Llego en 2 min',
+      'Estoy en la esquina',
+      'No te veo, ¿dónde estás?',
+      'Soy el carro blanco',
     ],
   };
 

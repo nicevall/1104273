@@ -54,6 +54,10 @@ class PricingService {
   static const double nightPerKm = 0.35;
   static const double nightPerWaitMinute = 0.08;
 
+  // === DESCUENTO GRUPAL (carpooling) ===
+  static const double groupDiscountPerPassenger = 0.08; // 8% por pasajero
+  static const double maxGroupDiscount = 0.25;           // Tope 25%
+
   // === Horarios ===
   static const int dayStartHour = 6;   // 06:00
   static const int dayEndHour = 19;     // 19:00 (inclusive)
@@ -220,5 +224,31 @@ class PricingService {
   /// Obtiene el precio mínimo según la hora actual
   double getCurrentMinimumFare() {
     return isNightTime() ? nightMinimumFare : dayMinimumFare;
+  }
+
+  // ============================================================
+  // DESCUENTO GRUPAL
+  // ============================================================
+
+  /// Calcular porcentaje de descuento grupal
+  /// [passengerCount] = número de pasajeros picked_up en el carro
+  static double getGroupDiscountPercent(int passengerCount) {
+    if (passengerCount <= 0) return 0.0;
+    final discount = passengerCount * groupDiscountPerPassenger;
+    return discount.clamp(0.0, maxGroupDiscount);
+  }
+
+  /// Aplicar descuento grupal a una tarifa
+  /// Retorna la tarifa con descuento (sobre el total final, después del mínimo)
+  static double applyGroupDiscount(double fare, int passengerCount) {
+    final discountPercent = getGroupDiscountPercent(passengerCount);
+    return double.parse((fare * (1.0 - discountPercent)).toStringAsFixed(2));
+  }
+
+  /// Redondear al alza al múltiplo de $0.05 más cercano (para pago en efectivo)
+  /// En Ecuador nadie maneja monedas de 1 centavo
+  /// Ej: $1.52 → $1.55, $1.50 → $1.50, $1.41 → $1.45
+  static double roundUpToNickel(double fare) {
+    return (fare * 20).ceil() / 20.0;
   }
 }

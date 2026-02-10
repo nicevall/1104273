@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/firebase_auth_service.dart';
 import '../../../data/services/firestore_service.dart';
+import '../../../data/services/notification_service.dart';
 import 'auth_event.dart';
 import 'auth_state.dart';
 
@@ -93,6 +94,9 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       // Usuario completamente autenticado y verificado
       print('🔐 AuthBloc: Usuario AUTENTICADO → Authenticated');
       emit(Authenticated(user: user));
+
+      // Guardar/actualizar FCM token para push notifications
+      NotificationService().saveTokenForUser(user.userId);
     } catch (e) {
       print('🔐 AuthBloc: ERROR → $e');
       emit(AuthError(error: 'Error al verificar autenticación: $e'));
@@ -139,6 +143,9 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
       // Login exitoso
       emit(Authenticated(user: user));
+
+      // Guardar/actualizar FCM token para push notifications
+      NotificationService().saveTokenForUser(user.userId);
     } catch (e) {
       // Error de autenticación
       emit(AuthError(error: e.toString()));
@@ -152,6 +159,12 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   ) async {
     print('🔐 AuthBloc: Cerrando sesión...');
     try {
+      // Limpiar FCM token para no recibir notificaciones post-logout
+      final currentUser = _authService.currentUser;
+      if (currentUser != null) {
+        await _firestoreService.clearFcmToken(currentUser.uid);
+      }
+
       // Limpiar datos de sesión rápida (SharedPreferences)
       try {
         final prefs = await SharedPreferences.getInstance();

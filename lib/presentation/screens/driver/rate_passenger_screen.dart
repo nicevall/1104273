@@ -2,8 +2,10 @@
 // Pantalla de calificación del pasajero por parte del conductor
 // Se muestra después de confirmar el pago del pasajero
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../data/models/user_model.dart';
@@ -16,6 +18,7 @@ class RatePassengerScreen extends StatefulWidget {
   final String passengerId; // Pasajero calificado (ratedUserId)
   final String passengerName;
   final double fare;
+  final bool fromRoute; // true si vino de go_router (auto-redirect), false si Navigator.push
 
   const RatePassengerScreen({
     super.key,
@@ -24,6 +27,7 @@ class RatePassengerScreen extends StatefulWidget {
     required this.passengerId,
     required this.passengerName,
     required this.fare,
+    this.fromRoute = false,
   });
 
   @override
@@ -128,7 +132,7 @@ class _RatePassengerScreenState extends State<RatePassengerScreen> {
             backgroundColor: AppColors.success,
           ),
         );
-        Navigator.pop(context); // Volver al mapa del conductor
+        await _cleanupAndNavigate();
       }
     } catch (e) {
       debugPrint('Error al enviar calificación: $e');
@@ -144,17 +148,56 @@ class _RatePassengerScreenState extends State<RatePassengerScreen> {
     }
   }
 
-  void _skipRating() {
-    Navigator.pop(context);
+  Future<void> _skipRating() async {
+    // Registrar en Firestore que se omitió la calificación
+    await _ratingService.submitSkippedRating(
+      tripId: widget.tripId,
+      raterId: widget.driverId,
+      ratedUserId: widget.passengerId,
+      raterRole: 'conductor',
+    );
+    await _cleanupAndNavigate();
+  }
+
+  /// Limpiar ride_requests y navegar de vuelta
+  Future<void> _cleanupAndNavigate() async {
+    try {
+      // Limpiar ride_requests activas del pasajero
+      final firestore = FirebaseFirestore.instance;
+      final activeReqs = await firestore
+          .collection('ride_requests')
+          .where('passengerId', isEqualTo: widget.passengerId)
+          .where('status', whereIn: ['searching', 'reviewing', 'accepted'])
+          .get();
+
+      for (final doc in activeReqs.docs) {
+        await doc.reference.update({
+          'status': 'completed',
+          'completedAt': Timestamp.now(),
+        });
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error limpiando ride_request: $e');
+    }
+
+    if (!mounted) return;
+
+    if (widget.fromRoute) {
+      // Vino de go_router (auto-redirect) → volver a home
+      context.go('/home');
+    } else {
+      // Vino de Navigator.push (conductor en viaje activo) → pop
+      Navigator.pop(context);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: false,
+      canPop: !widget.fromRoute, // Permitir pop solo si vino de Navigator.push
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) {
-          _skipRating();
+        if (!didPop && !widget.fromRoute) {
+          Navigator.pop(context);
         }
       },
       child: Scaffold(
@@ -162,12 +205,15 @@ class _RatePassengerScreenState extends State<RatePassengerScreen> {
         appBar: AppBar(
           backgroundColor: Colors.white,
           elevation: 0,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
-            onPressed: _skipRating,
-          ),
+          automaticallyImplyLeading: !widget.fromRoute,
+          leading: widget.fromRoute
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
+                  onPressed: () => Navigator.pop(context),
+                ),
           title: Text(
-            'Calificar pasajero',
+            'Califica al pasajero',
             style: AppTextStyles.h3.copyWith(color: AppColors.textPrimary),
           ),
           centerTitle: true,
@@ -198,20 +244,7 @@ class _RatePassengerScreenState extends State<RatePassengerScreen> {
 
               const SizedBox(height: 20),
 
-              // === Omitir calificación ===
-              GestureDetector(
-                onTap: _skipRating,
-                child: Text(
-                  'Omitir calificación',
-                  style: AppTextStyles.body2.copyWith(
-                    decoration: TextDecoration.underline,
-                    color: AppColors.primary,
-                    decorationColor: AppColors.primary,
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
+              const SizedBox(height: 4),
 
               // === Comentario ===
               _buildCommentField(),

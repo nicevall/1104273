@@ -8,12 +8,15 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:widget_to_marker/widget_to_marker.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
+import '../../../data/models/trip_model.dart';
 
 class MapRouteScreen extends StatefulWidget {
   final String userId;
   final String userRole;
   final Map<String, dynamic> origin;
   final Map<String, dynamic> destination;
+  final Map<String, dynamic>? pickupPoint;
+  final String? referenceNote;
 
   const MapRouteScreen({
     super.key,
@@ -21,6 +24,8 @@ class MapRouteScreen extends StatefulWidget {
     required this.userRole,
     required this.origin,
     required this.destination,
+    this.pickupPoint,
+    this.referenceNote,
   });
 
   @override
@@ -379,13 +384,47 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
       return;
     }
 
-    context.push('/trip/confirm-pickup', extra: {
+    // Convertir Maps a TripLocation para PassengerWaitingScreen
+    final origin = TripLocation(
+      name: widget.origin['name'] as String? ?? '',
+      address: widget.origin['address'] as String? ?? '',
+      latitude: widget.origin['latitude'] as double,
+      longitude: widget.origin['longitude'] as double,
+    );
+
+    final destination = TripLocation(
+      name: widget.destination['name'] as String? ?? '',
+      address: widget.destination['address'] as String? ?? '',
+      latitude: widget.destination['latitude'] as double,
+      longitude: widget.destination['longitude'] as double,
+    );
+
+    // Usar el pickup point que viene de ConfirmPickupScreen
+    final pickup = widget.pickupPoint ?? widget.origin;
+    final pickupPoint = TripLocation(
+      name: pickup['name'] as String? ?? '',
+      address: pickup['address'] as String? ?? '',
+      latitude: pickup['latitude'] as double,
+      longitude: pickup['longitude'] as double,
+    );
+
+    // Splitear preferencias: "mochila,objeto_grande,mascota" → ["mochila", "objeto_grande", "mascota"]
+    final preferences = _selectedPreference
+        .split(',')
+        .map((p) => p.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+
+    context.push('/trip/waiting', extra: {
       'userId': widget.userId,
-      'userRole': widget.userRole,
-      'origin': widget.origin,
-      'destination': widget.destination,
-      'preference': _selectedPreference,
-      'preferenceDescription': _preferenceDescription,
+      'origin': origin,
+      'destination': destination,
+      'pickupPoint': pickupPoint,
+      'referenceNote': widget.referenceNote,
+      'preferences': preferences,
+      'objectDescription': _preferenceDescription.isNotEmpty
+          ? _preferenceDescription
+          : null,
       'petType': _petType,
       'petSize': _petSize,
       'petDescription': _petDescription,
@@ -408,13 +447,13 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
             Text('Método de pago', style: AppTextStyles.h3),
             const SizedBox(height: 20),
             _buildPaymentOption(
-                'Efectivo', Icons.payments_outlined, _paymentMethod == 'Efectivo',
+                'Efectivo', _paymentMethod == 'Efectivo',
                 subtitle: 'Paga en efectivo al conductor'),
             _buildPaymentOption(
-                'Ahorita', Icons.account_balance_outlined, _paymentMethod == 'Ahorita',
+                'Ahorita', _paymentMethod == 'Ahorita',
                 subtitle: 'Pago inmediato por transferencia'),
             _buildPaymentOption(
-                'DeUna', Icons.bolt_outlined, _paymentMethod == 'DeUna',
+                'DeUna', _paymentMethod == 'DeUna',
                 subtitle: 'Transferencia al finalizar el viaje'),
             const SizedBox(height: 20),
           ],
@@ -423,21 +462,48 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
     );
   }
 
-  Widget _buildPaymentOption(String method, IconData icon, bool isSelected,
+  /// Widget del leading para método de pago (ícono o imagen PNG)
+  Widget _buildPaymentLeading(String method, {bool isSelected = false, double size = 48}) {
+    // Ahorita y DeUna tienen logos PNG
+    if (method == 'Ahorita' || method == 'DeUna') {
+      final assetPath = method == 'Ahorita'
+          ? 'assets/icons/ahorita.png'
+          : 'assets/icons/deuna.png';
+      return Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: isSelected
+              ? Border.all(color: AppColors.primary, width: 2)
+              : null,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(isSelected ? 10 : 12),
+          child: Image.asset(assetPath, fit: BoxFit.cover),
+        ),
+      );
+    }
+
+    // Efectivo usa ícono Material
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: isSelected
+            ? AppColors.primary.withOpacity(0.1)
+            : AppColors.tertiary,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Icon(Icons.payments_outlined,
+          color: isSelected ? AppColors.primary : AppColors.textSecondary),
+    );
+  }
+
+  Widget _buildPaymentOption(String method, bool isSelected,
       {String? subtitle}) {
     return ListTile(
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.primary.withOpacity(0.1)
-              : AppColors.tertiary,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(icon,
-            color: isSelected ? AppColors.primary : AppColors.textSecondary),
-      ),
+      leading: _buildPaymentLeading(method, isSelected: isSelected),
       title: Text(method,
           style: AppTextStyles.body1.copyWith(
             fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
@@ -737,29 +803,9 @@ class _MapRouteScreenState extends State<MapRouteScreen> {
   }
 
   Widget _buildPaymentTile() {
-    IconData paymentIcon;
-    switch (_paymentMethod) {
-      case 'Ahorita':
-        paymentIcon = Icons.account_balance_outlined;
-        break;
-      case 'DeUna':
-        paymentIcon = Icons.bolt_outlined;
-        break;
-      default:
-        paymentIcon = Icons.payments_outlined;
-    }
-
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: AppColors.tertiary,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(paymentIcon, color: AppColors.textSecondary),
-      ),
+      leading: _buildPaymentLeading(_paymentMethod, size: 48),
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

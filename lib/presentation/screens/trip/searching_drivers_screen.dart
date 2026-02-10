@@ -239,10 +239,8 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
 
     if (result == 'cancel') {
       _cancelSearch();
-      return false;
     } else if (result == 'retry') {
       _retrySearch();
-      return false;
     }
 
     return false;
@@ -251,50 +249,34 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
   Widget _buildBackConfirmationDialog() {
     return AlertDialog(
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16),
       ),
-      title: Text(
-        '¿Qué deseas hacer?',
-        style: AppTextStyles.h3,
-        textAlign: TextAlign.center,
-      ),
-      content: Text(
-        'Estamos buscando conductores disponibles cerca de ti.',
-        style: AppTextStyles.body2.copyWith(
-          color: AppColors.textSecondary,
-        ),
-        textAlign: TextAlign.center,
+      title: const Text('¿Cancelar viaje?'),
+      content: const Text(
+        'Tu solicitud será cancelada y tendrás que buscar de nuevo.',
       ),
       actionsAlignment: MainAxisAlignment.center,
-      actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
       actions: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        // Fila: Continuar + Cancelar
+        Row(
           children: [
-            // Botón principal: Volver a solicitar
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context, 'retry'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: Colors.white,
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.textSecondary,
+                  side: const BorderSide(color: AppColors.border),
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  elevation: 0,
                 ),
-                child: Text(
-                  'Volver a solicitar',
-                  style: AppTextStyles.button,
-                ),
+                child: const Text('Continuar'),
               ),
             ),
-            const SizedBox(height: 12),
-            // Botón secundario: Cancelar solicitud (destructivo → rojo)
-            SizedBox(
-              width: double.infinity,
+            const SizedBox(width: 16),
+            Expanded(
               child: ElevatedButton(
                 onPressed: () => Navigator.pop(context, 'cancel'),
                 style: ElevatedButton.styleFrom(
@@ -302,19 +284,30 @@ class _SearchingDriversScreenState extends State<SearchingDriversScreen>
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  elevation: 0,
-                ),
-                child: Text(
-                  'Cancelar solicitud',
-                  style: AppTextStyles.button.copyWith(
-                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
                   ),
                 ),
+                child: const Text('Cancelar'),
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 10),
+        // Botón ancho completo: Volver a solicitar
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: () => Navigator.pop(context, 'retry'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            child: const Text('Volver a solicitar'),
+          ),
         ),
       ],
     );

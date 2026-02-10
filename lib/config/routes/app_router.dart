@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import '../../data/models/trip_model.dart';
+import '../../presentation/blocs/auth/auth_state.dart';
+import '../../presentation/blocs/auth/auth_bloc.dart';
 import '../../presentation/screens/auth/splash_screen.dart';
 import '../../presentation/screens/auth/welcome_screen.dart';
 import '../../presentation/screens/auth/login_screen.dart';
@@ -35,6 +38,7 @@ import '../../presentation/screens/driver/driver_active_trip_screen.dart';
 import '../../presentation/screens/trip/passenger_waiting_screen.dart';
 import '../../presentation/screens/trip/passenger_tracking_screen.dart';
 import '../../presentation/screens/trip/rate_driver_screen.dart';
+import '../../presentation/screens/driver/rate_passenger_screen.dart';
 
 /// Router de la aplicación con go_router
 /// Define todas las rutas y navegación de UniRide
@@ -245,16 +249,35 @@ final GoRouter appRouter = GoRouter(
     // ==================== MAIN APP ROUTES ====================
 
     // Home Screen (sin bottom navigation)
+    // Si no se pasa extra, lee datos del AuthBloc como fallback
     GoRoute(
       path: '/home',
       name: 'home',
       builder: (context, state) {
         final extra = state.extra as Map<String, dynamic>?;
+
+        // Fallback: leer datos del AuthBloc si no vienen en extra
+        String userId = extra?['userId'] as String? ?? '';
+        String userRole = extra?['userRole'] as String? ?? 'pasajero';
+        bool hasVehicle = extra?['hasVehicle'] as bool? ?? false;
+        final activeRole = extra?['activeRole'] as String?;
+
+        if (userId.isEmpty) {
+          try {
+            final authState = context.read<AuthBloc>().state;
+            if (authState is Authenticated) {
+              userId = authState.user.userId;
+              userRole = authState.user.role;
+              hasVehicle = authState.user.hasVehicle;
+            }
+          } catch (_) {}
+        }
+
         return HomeScreen(
-          userId: extra?['userId'] as String? ?? '',
-          userRole: extra?['userRole'] as String? ?? 'pasajero',
-          hasVehicle: extra?['hasVehicle'] as bool? ?? false,
-          activeRole: extra?['activeRole'] as String?,
+          userId: userId,
+          userRole: userRole,
+          hasVehicle: hasVehicle,
+          activeRole: activeRole,
         );
       },
     ),
@@ -280,6 +303,7 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>?;
         return ProfileScreen(
           userId: extra?['userId'] as String? ?? '',
+          activeRole: extra?['activeRole'] as String? ?? 'pasajero',
         );
       },
     ),
@@ -316,7 +340,7 @@ final GoRouter appRouter = GoRouter(
       },
     ),
 
-    // Map Route Screen - Mapa con origen/destino
+    // Map Route Screen - Mapa con origen/destino + preferencias y pago
     GoRoute(
       path: '/trip/map',
       name: 'trip-map',
@@ -327,6 +351,8 @@ final GoRouter appRouter = GoRouter(
           userRole: extra?['userRole'] as String? ?? 'pasajero',
           origin: extra?['origin'] as Map<String, dynamic>? ?? {},
           destination: extra?['destination'] as Map<String, dynamic>? ?? {},
+          pickupPoint: extra?['pickupPoint'] as Map<String, dynamic>?,
+          referenceNote: extra?['referenceNote'] as String?,
         );
       },
     ),
@@ -372,12 +398,6 @@ final GoRouter appRouter = GoRouter(
           userRole: extra?['userRole'] as String? ?? 'pasajero',
           origin: extra?['origin'] as Map<String, dynamic>? ?? {},
           destination: extra?['destination'] as Map<String, dynamic>? ?? {},
-          preference: extra?['preference'] as String? ?? 'mochila',
-          preferenceDescription: extra?['preferenceDescription'] as String? ?? '',
-          petType: extra?['petType'] as String?,
-          petSize: extra?['petSize'] as String?,
-          petDescription: extra?['petDescription'] as String?,
-          paymentMethod: extra?['paymentMethod'] as String? ?? 'Efectivo',
         );
       },
     ),
@@ -518,7 +538,7 @@ final GoRouter appRouter = GoRouter(
       },
     ),
 
-    // Rate Driver - Calificar al conductor
+    // Rate Driver - Calificar al conductor (pasajero → conductor)
     GoRoute(
       path: '/trip/rate',
       name: 'trip-rate',
@@ -530,6 +550,23 @@ final GoRouter appRouter = GoRouter(
           driverId: extra?['driverId'] as String? ?? '',
           ratingContext: extra?['ratingContext'] as String? ?? 'completed',
           fare: extra?['fare'] as double?,
+        );
+      },
+    ),
+
+    // Rate Passenger - Calificar al pasajero (conductor → pasajero)
+    GoRoute(
+      path: '/driver/rate-passenger',
+      name: 'driver-rate-passenger',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return RatePassengerScreen(
+          tripId: extra?['tripId'] as String? ?? '',
+          driverId: extra?['driverId'] as String? ?? '',
+          passengerId: extra?['passengerId'] as String? ?? '',
+          passengerName: extra?['passengerName'] as String? ?? '',
+          fare: (extra?['fare'] as num?)?.toDouble() ?? 0.0,
+          fromRoute: true, // Vino de go_router (auto-redirect)
         );
       },
     ),

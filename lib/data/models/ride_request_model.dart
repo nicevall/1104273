@@ -9,6 +9,7 @@ import 'trip_model.dart';
 /// Estado de la solicitud de viaje
 enum RideRequestStatus {
   searching,   // Buscando conductor
+  reviewing,   // Un conductor está viendo la solicitud
   accepted,    // Conductor aceptó
   cancelled,   // Pasajero canceló
   expired,     // Expiró sin conductor
@@ -90,6 +91,9 @@ class RideRequestModel extends Equatable {
 
   /// Si la solicitud está activa (buscando conductor)
   bool get isSearching => status == 'searching';
+
+  /// Si un conductor está revisando la solicitud
+  bool get isReviewing => status == 'reviewing';
 
   /// Si ya fue aceptada
   bool get isAccepted => status == 'accepted';

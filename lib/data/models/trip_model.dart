@@ -83,6 +83,8 @@ class TripPassenger extends Equatable {
   final double? meterFare; // Tarifa actual del taxímetro (fuente de verdad)
   final bool? isNightTariff; // Tarifa fijada al pickup (no cambia durante viaje)
   final DateTime? meterLastUpdated; // Última sincronización a Firestore
+  final double? discountPercent; // Descuento grupal aplicado (0.08, 0.16, etc.)
+  final double? fareBeforeDiscount; // Tarifa sin descuento (para mostrar en UI)
 
   const TripPassenger({
     required this.userId,
@@ -111,6 +113,8 @@ class TripPassenger extends Equatable {
     this.meterFare,
     this.isNightTariff,
     this.meterLastUpdated,
+    this.discountPercent,
+    this.fareBeforeDiscount,
   });
 
   /// Si el pasajero lleva mascota
@@ -147,7 +151,7 @@ class TripPassenger extends Equatable {
 
   factory TripPassenger.fromJson(Map<String, dynamic> json) {
     return TripPassenger(
-      userId: json['userId'] as String,
+      userId: json['userId'] as String? ?? '',
       status: json['status'] as String? ?? 'pending',
       pickupPoint: json['pickupPoint'] != null
           ? TripLocation.fromJson(json['pickupPoint'] as Map<String, dynamic>)
@@ -192,6 +196,8 @@ class TripPassenger extends Equatable {
               ? (json['meterLastUpdated'] as Timestamp).toDate()
               : DateTime.parse(json['meterLastUpdated'] as String))
           : null,
+      discountPercent: (json['discountPercent'] as num?)?.toDouble(),
+      fareBeforeDiscount: (json['fareBeforeDiscount'] as num?)?.toDouble(),
     );
   }
 
@@ -223,6 +229,8 @@ class TripPassenger extends Equatable {
       if (meterFare != null) 'meterFare': meterFare,
       if (isNightTariff != null) 'isNightTariff': isNightTariff,
       if (meterLastUpdated != null) 'meterLastUpdated': Timestamp.fromDate(meterLastUpdated!),
+      if (discountPercent != null) 'discountPercent': discountPercent,
+      if (fareBeforeDiscount != null) 'fareBeforeDiscount': fareBeforeDiscount,
     };
   }
 
@@ -252,6 +260,8 @@ class TripPassenger extends Equatable {
     double? meterFare,
     bool? isNightTariff,
     DateTime? meterLastUpdated,
+    double? discountPercent,
+    double? fareBeforeDiscount,
   }) {
     return TripPassenger(
       userId: userId ?? this.userId,
@@ -279,6 +289,8 @@ class TripPassenger extends Equatable {
       meterFare: meterFare ?? this.meterFare,
       isNightTariff: isNightTariff ?? this.isNightTariff,
       meterLastUpdated: meterLastUpdated ?? this.meterLastUpdated,
+      discountPercent: discountPercent ?? this.discountPercent,
+      fareBeforeDiscount: fareBeforeDiscount ?? this.fareBeforeDiscount,
     );
   }
 
@@ -309,6 +321,8 @@ class TripPassenger extends Equatable {
         meterFare,
         isNightTariff,
         meterLastUpdated,
+        discountPercent,
+        fareBeforeDiscount,
       ];
 }
 
@@ -482,6 +496,7 @@ class TripModel extends Equatable {
       passengers: (json['passengers'] as List<dynamic>?)
               ?.map(
                   (e) => TripPassenger.fromJson(e as Map<String, dynamic>))
+              .where((p) => p.userId.isNotEmpty) // Filtrar pasajeros con userId vacío (datos huérfanos)
               .toList() ??
           const [],
       allowsLuggage: json['allowsLuggage'] as bool? ?? true,

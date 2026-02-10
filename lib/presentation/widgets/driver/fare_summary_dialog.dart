@@ -136,38 +136,68 @@ class FareSummaryDialog extends StatelessWidget {
               '${session.totalWaitMinutes.round()} min espera',
               '\$${waitCost.toStringAsFixed(2)}',
             ),
+          // Descuento grupal
+          if (session.discountPercent > 0)
+            _buildRow(
+              'Desc. grupo (${(session.discountPercent * 100).round()}%)',
+              '-\$${(session.fareBeforeDiscount - session.currentFare).toStringAsFixed(2)}',
+              color: AppColors.success,
+            ),
           const Divider(height: 20),
 
-          // Total
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'TOTAL',
-                style: AppTextStyles.body1.copyWith(
-                  fontWeight: FontWeight.w700,
+          // Total (con redondeo si es efectivo)
+          Builder(builder: (context) {
+            final isCash = paymentMethod == 'Efectivo';
+            final displayFare = isCash
+                ? PricingService.roundUpToNickel(session.currentFare)
+                : session.currentFare;
+            final wasRounded = isCash && displayFare != session.currentFare;
+
+            return Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'TOTAL',
+                      style: AppTextStyles.body1.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      '\$${displayFare.toStringAsFixed(2)}',
+                      style: AppTextStyles.h2.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              Text(
-                '\$${session.currentFare.toStringAsFixed(2)}',
-                style: AppTextStyles.h2.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.primary,
-                ),
-              ),
-            ],
-          ),
-          if (appliedMinimum)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                '(Tarifa mínima aplicada)',
-                style: AppTextStyles.caption.copyWith(
-                  color: AppColors.textTertiary,
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-            ),
+                if (appliedMinimum)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '(Tarifa mínima aplicada)',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textTertiary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                if (wasRounded)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '(Redondeado a \$0.05 — efectivo)',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textTertiary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          }),
           const SizedBox(height: 12),
 
           // Método de pago
@@ -214,6 +244,24 @@ class FareSummaryDialog extends StatelessWidget {
         Row(
           children: [
             Expanded(
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text(
+                  'No pagó',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
               child: ElevatedButton.icon(
                 onPressed: () => Navigator.of(context).pop(true),
                 icon: const Icon(Icons.payments, size: 18),
@@ -237,7 +285,7 @@ class FareSummaryDialog extends StatelessWidget {
     );
   }
 
-  Widget _buildRow(String label, String value) {
+  Widget _buildRow(String label, String value, {Color? color}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -249,7 +297,10 @@ class FareSummaryDialog extends StatelessWidget {
           ),
           Text(
             value,
-            style: AppTextStyles.body2.copyWith(fontWeight: FontWeight.w500),
+            style: AppTextStyles.body2.copyWith(
+              fontWeight: FontWeight.w500,
+              color: color,
+            ),
           ),
         ],
       ),

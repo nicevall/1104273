@@ -11,6 +11,7 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../data/models/ride_request_model.dart';
 import '../../../data/models/trip_model.dart';
+import '../../../data/services/notification_service.dart';
 import '../../../data/services/ride_requests_service.dart';
 import '../../../data/services/trips_service.dart';
 
@@ -53,6 +54,8 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
 
   // Constantes
   static const int _searchDurationSeconds = 180; // 3 minutos
+  static const int _reviewingTimeoutSeconds = 90; // 1.5 min — protección si conductor crashea
+  static const int _acceptedTimeoutSeconds = 300; // 5 min — protección si conductor no inicia
 
   // Estado de la solicitud
   String? _requestId;
@@ -64,10 +67,16 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
   bool _searchExpired = false;
   String? _error;
 
+  // Estado de conductor revisando solicitud
+  bool _driverReviewing = false;
+  Timer? _reviewingTimeoutTimer;
+
   // Estado de conductor encontrado
   bool _driverFound = false;
+  bool _acceptedTimeoutReached = false;
   String? _assignedTripId;
   StreamSubscription<TripModel?>? _tripSubscription;
+  Timer? _acceptedTimeoutTimer;
 
   // Animaciones
   late AnimationController _rotationController;
@@ -82,6 +91,8 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Suprimir notificación de aceptación mientras estamos esperando
+    NotificationService().suppressType('request_accepted');
     _initAnimations();
     _createRequest();
   }
@@ -106,8 +117,11 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
 
   @override
   void dispose() {
+    NotificationService().unsuppressType('request_accepted');
     WidgetsBinding.instance.removeObserver(this);
     _countdownTimer?.cancel();
+    _reviewingTimeoutTimer?.cancel();
+    _acceptedTimeoutTimer?.cancel();
     _requestSubscription?.cancel();
     _tripSubscription?.cancel();
     _rotationController.dispose();
@@ -184,24 +198,53 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
   void _onRequestUpdate(RideRequestModel? request) {
     if (request == null || !mounted) return;
 
+    debugPrint('🔔 PassengerWaiting: request update → status=${request.status}, tripId=${request.tripId}, driverFound=$_driverFound');
+
     setState(() {
       _currentRequest = request;
     });
 
-    // Si fue aceptado → transicionar a estado "Conductor encontrado"
-    if (request.status == 'accepted' && !_driverFound) {
+    // Si un conductor está revisando → pausar timer y mostrar mensaje
+    if (request.status == 'reviewing' && !_driverReviewing && !_driverFound) {
+      debugPrint('👀 PassengerWaiting: Un conductor está revisando la solicitud');
       _countdownTimer?.cancel();
       setState(() {
+        _driverReviewing = true;
+      });
+      _startReviewingTimeout();
+    }
+
+    // Si vuelve a searching (conductor salió sin aceptar) → reanudar timer
+    if (request.status == 'searching' && _driverReviewing) {
+      debugPrint('🔄 PassengerWaiting: Conductor salió, reanudando búsqueda');
+      _reviewingTimeoutTimer?.cancel();
+      setState(() {
+        _driverReviewing = false;
+      });
+      _startCountdown();
+    }
+
+    // Si fue aceptado → transicionar a estado "Conductor encontrado"
+    if (request.status == 'accepted' && !_driverFound) {
+      debugPrint('✅ PassengerWaiting: ACEPTADO! tripId=${request.tripId}');
+      _countdownTimer?.cancel();
+      _reviewingTimeoutTimer?.cancel();
+      setState(() {
         _driverFound = true;
+        _driverReviewing = false;
         _assignedTripId = request.tripId;
       });
+      _startAcceptedTimeout();
 
       // Suscribirse al trip para detectar cuando se inicie
       if (request.tripId != null) {
+        debugPrint('📡 PassengerWaiting: Suscribiéndose al trip ${request.tripId}');
         _tripSubscription?.cancel();
         _tripSubscription = _tripsService
             .getTripStream(request.tripId!)
             .listen(_onTripUpdate);
+      } else {
+        debugPrint('⚠️ PassengerWaiting: tripId es NULL en request aceptada!');
       }
     }
 
@@ -218,8 +261,12 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
   void _onTripUpdate(TripModel? trip) {
     if (trip == null || !mounted) return;
 
+    debugPrint('🚗 PassengerWaiting: trip update → status=${trip.status}, tripId=${trip.tripId}');
+
     // Cuando el conductor inicia el viaje (in_progress) → auto-navegar a tracking
     if (trip.status == 'in_progress') {
+      debugPrint('🎯 PassengerWaiting: trip IN_PROGRESS → navegando a tracking');
+      _acceptedTimeoutTimer?.cancel();
       _tripSubscription?.cancel();
       context.go('/trip/tracking', extra: {
         'tripId': trip.tripId,
@@ -306,6 +353,109 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
     }
   }
 
+  // ==================== Protección: Reviewing timeout ====================
+
+  /// Si el conductor tarda >90s revisando sin aceptar (posible crash),
+  /// revertir a 'searching' y reanudar countdown.
+  void _startReviewingTimeout() {
+    _reviewingTimeoutTimer?.cancel();
+    _reviewingTimeoutTimer = Timer(
+      const Duration(seconds: _reviewingTimeoutSeconds),
+      () {
+        if (!mounted || !_driverReviewing || _driverFound) return;
+        debugPrint('⏰ PassengerWaiting: reviewing timeout — revirtiendo a searching');
+        if (_requestId != null) {
+          _requestsService.unreviewRequest(_requestId!);
+        }
+        setState(() {
+          _driverReviewing = false;
+        });
+        _startCountdown();
+      },
+    );
+  }
+
+  // ==================== Protección: Accepted timeout ====================
+
+  /// Si el conductor acepta pero no inicia el viaje en 5 min, mostrar diálogo.
+  void _startAcceptedTimeout() {
+    _acceptedTimeoutTimer?.cancel();
+    _acceptedTimeoutTimer = Timer(
+      const Duration(seconds: _acceptedTimeoutSeconds),
+      () {
+        if (!mounted || !_driverFound) return;
+        debugPrint('⏰ PassengerWaiting: accepted timeout — conductor no inició viaje');
+        setState(() {
+          _acceptedTimeoutReached = true;
+        });
+        _showAcceptedTimeoutDialog();
+      },
+    );
+  }
+
+  void _showAcceptedTimeoutDialog() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('El conductor no ha iniciado'),
+        content: const Text(
+          'Han pasado 5 minutos y el conductor aún no inicia el viaje. '
+          'Puedes seguir esperando o cancelar para buscar otro conductor.',
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Seguir esperando'),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    _tripSubscription?.cancel();
+                    if (_requestId != null) {
+                      try {
+                        await _requestsService.cancelRequest(_requestId!);
+                      } catch (_) {}
+                    }
+                    if (mounted) context.go('/home');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text('Cancelar viaje'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _retrySearch() async {
     // Cancelar solicitud anterior si existe
     if (_requestId != null) {
@@ -334,7 +484,7 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: const Text('¿Cancelar búsqueda?'),
+        title: const Text('¿Cancelar viaje?'),
         content: const Text(
           'Tu solicitud será cancelada y tendrás que buscar de nuevo.',
         ),
@@ -357,7 +507,7 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text('No'),
+                  child: const Text('Continuar'),
                 ),
               ),
               const SizedBox(width: 16),
@@ -373,7 +523,7 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
                     ),
                     elevation: 0,
                   ),
-                  child: const Text('Sí, cancelar'),
+                  child: const Text('Cancelar'),
                 ),
               ),
             ],
@@ -550,15 +700,21 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
           child: Column(
             children: [
               Text(
-                'Buscando conductor...',
+                _driverReviewing
+                    ? 'Un conductor revisa tu solicitud'
+                    : 'Buscando conductor...',
                 style: AppTextStyles.h2.copyWith(
                   fontWeight: FontWeight.w600,
+                  fontSize: 20,
+                  color: _driverReviewing ? AppColors.success : null,
                 ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               Text(
-                'Tu solicitud está visible para conductores\nque van hacia tu destino.',
+                _driverReviewing
+                    ? 'Espera mientras revisa los detalles.'
+                    : 'Tu solicitud está visible para conductores\nque van hacia tu destino.',
                 style: AppTextStyles.body2.copyWith(
                   color: AppColors.textSecondary,
                 ),
@@ -634,9 +790,13 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 40),
           child: Text(
-            'Espere un momento mientras el conductor\ninicia el viaje.',
+            _acceptedTimeoutReached
+                ? 'El conductor está tardando más de lo esperado.'
+                : 'Espere un momento mientras el conductor\ninicia el viaje.',
             style: AppTextStyles.body2.copyWith(
-              color: AppColors.textSecondary,
+              color: _acceptedTimeoutReached
+                  ? AppColors.warning
+                  : AppColors.textSecondary,
             ),
             textAlign: TextAlign.center,
           ),
@@ -649,15 +809,21 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
           width: 200,
           child: Column(
             children: [
-              const LinearProgressIndicator(
-                backgroundColor: Color(0xFFE0E0E0),
-                valueColor: AlwaysStoppedAnimation<Color>(AppColors.success),
+              LinearProgressIndicator(
+                backgroundColor: const Color(0xFFE0E0E0),
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  _acceptedTimeoutReached ? AppColors.warning : AppColors.success,
+                ),
               ),
               const SizedBox(height: 8),
               Text(
-                'Esperando que inicie el viaje...',
+                _acceptedTimeoutReached
+                    ? 'Conductor sin actividad...'
+                    : 'Esperando que inicie el viaje...',
                 style: AppTextStyles.caption.copyWith(
-                  color: AppColors.textSecondary,
+                  color: _acceptedTimeoutReached
+                      ? AppColors.warning
+                      : AppColors.textSecondary,
                 ),
               ),
             ],
@@ -760,13 +926,13 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
               ],
             ),
           ),
-          // Icono de búsqueda con pulso
+          // Icono de búsqueda con pulso (cambia a ojo cuando revisan)
           ScaleTransition(
             scale: _pulseAnimation,
             child: Icon(
-              Icons.search,
+              _driverReviewing ? Icons.visibility : Icons.search,
               size: 48,
-              color: _timerColor,
+              color: _driverReviewing ? AppColors.success : _timerColor,
             ),
           ),
         ],
@@ -776,19 +942,38 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
 
   Widget _buildTimer() {
     final progress = _remainingSeconds / _searchDurationSeconds;
+    final color = _driverReviewing ? AppColors.success : _timerColor;
 
     return Column(
       children: [
-        // Tiempo restante grande
-        Text(
-          _formatTime(_remainingSeconds),
-          style: AppTextStyles.h1.copyWith(
-            fontSize: 48,
-            fontWeight: FontWeight.w300,
-            color: _timerColor,
-            letterSpacing: 2,
+        // Tiempo restante grande (o "Pausado" si revisan)
+        if (_driverReviewing)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.pause_circle_outline, color: AppColors.success, size: 24),
+              const SizedBox(width: 6),
+              Text(
+                _formatTime(_remainingSeconds),
+                style: AppTextStyles.h1.copyWith(
+                  fontSize: 42,
+                  fontWeight: FontWeight.w300,
+                  color: AppColors.success,
+                  letterSpacing: 2,
+                ),
+              ),
+            ],
+          )
+        else
+          Text(
+            _formatTime(_remainingSeconds),
+            style: AppTextStyles.h1.copyWith(
+              fontSize: 48,
+              fontWeight: FontWeight.w300,
+              color: color,
+              letterSpacing: 2,
+            ),
           ),
-        ),
         const SizedBox(height: 8),
         // Barra de progreso
         Container(
@@ -799,7 +984,7 @@ class _PassengerWaitingScreenState extends State<PassengerWaitingScreen>
             child: LinearProgressIndicator(
               value: progress,
               backgroundColor: AppColors.tertiary,
-              valueColor: AlwaysStoppedAnimation<Color>(_timerColor),
+              valueColor: AlwaysStoppedAnimation<Color>(color),
             ),
           ),
         ),

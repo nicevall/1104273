@@ -49,8 +49,8 @@ class _DriverActiveRequestsScreenState
   // Cache de usuarios para evitar múltiples llamadas
   final Map<String, UserModel?> _usersCache = {};
 
-  // Cache de desvíos calculados
-  final Map<String, int?> _deviationsCache = {};
+  // Cache de ETA calculados (conductor → pickup del pasajero)
+  final Map<String, int?> _etaCache = {};
 
   // TTS: solicitudes ya anunciadas
   final Set<String> _announcedRequests = {};
@@ -115,9 +115,8 @@ class _DriverActiveRequestsScreenState
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Cancelar viaje'),
+        title: const Text('¿Cancelar viaje?'),
         content: const Text(
-          '¿Estás seguro que quieres cancelar este viaje?\n\n'
           'Los pasajeros aceptados serán notificados.',
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -137,7 +136,7 @@ class _DriverActiveRequestsScreenState
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text('No, continuar'),
+                  child: const Text('Continuar'),
                 ),
               ),
               const SizedBox(width: 16),
@@ -155,7 +154,7 @@ class _DriverActiveRequestsScreenState
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text('Sí, cancelar'),
+                  child: const Text('Cancelar'),
                 ),
               ),
             ],
@@ -201,14 +200,39 @@ class _DriverActiveRequestsScreenState
       if (_announcedRequests.contains(request.requestId)) continue;
       _announcedRequests.add(request.requestId);
 
-      // Construir el mensaje
-      final name = _usersCache[request.passengerId]?.firstName ?? 'Un pasajero';
-      final pickup = request.pickupPoint.name;
-      final deviation = _deviationsCache[request.requestId];
-      final deviationText = deviation != null ? ' Desvío de $deviation minutos.' : '';
+      // Obtener info del usuario y calcular ETA en paralelo
+      final userFuture = _getUserInfo(request.passengerId);
+      final etaFuture = _currentTrip != null
+          ? _calculateEta(_currentTrip!, request)
+          : Future.value();
 
-      final message = 'Nueva solicitud. $name quiere que lo recojas en $pickup.$deviationText';
-      _ttsService.speakRequest(message);
+      Future.wait<dynamic>([etaFuture, userFuture]).then((results) {
+        if (!mounted) return;
+        final user = results[1] as UserModel?;
+        final name = user?.firstName ?? 'Un pasajero';
+        final pickup = request.pickupPoint.name;
+        final eta = _etaCache[request.requestId];
+
+        final buffer = StringBuffer();
+        buffer.write('Nueva solicitud. $name en $pickup.');
+
+        if (eta != null) {
+          buffer.write(' Está a $eta minutos.');
+        }
+
+        buffer.write(' Pago con: ${request.paymentMethod.toLowerCase()}.');
+
+        if (request.hasPet) {
+          buffer.write(' Lleva mascota.');
+        }
+        if (request.hasLargeObject) {
+          buffer.write(' Lleva objeto grande.');
+        }
+
+        _ttsService.speakRequest(buffer.toString());
+      }).catchError((e) {
+        print('[TTS-ERROR] $e');
+      });
     }
   }
 
@@ -294,7 +318,6 @@ class _DriverActiveRequestsScreenState
             _requestsStream ??= _requestsService.getMatchingRequestsStream(
               driverOrigin: trip.origin,
               driverDestination: trip.destination,
-              radiusKm: 5.0,
             );
 
             // Pasajeros aceptados del viaje
@@ -318,6 +341,32 @@ class _DriverActiveRequestsScreenState
                         !acceptedIds.contains(r.passengerId) &&
                         !_locallyAcceptedIds.contains(r.passengerId))
                     .toList();
+
+                // Pre-fetch info de usuarios
+                for (final request in availableRequests) {
+                  if (!_usersCache.containsKey(request.passengerId)) {
+                    _getUserInfo(request.passengerId);
+                  }
+                }
+
+                // Pre-calcular ETA para solicitudes sin cache
+                for (final request in availableRequests) {
+                  if (!_etaCache.containsKey(request.requestId) && _currentTrip != null) {
+                    SchedulerBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) _calculateEta(_currentTrip!, request);
+                    });
+                  }
+                }
+
+                // Ordenar por ETA (más cercano primero, sin ETA al final)
+                availableRequests.sort((a, b) {
+                  final etaA = _etaCache[a.requestId];
+                  final etaB = _etaCache[b.requestId];
+                  if (etaA != null && etaB != null) return etaA.compareTo(etaB);
+                  if (etaA != null) return -1;
+                  if (etaB != null) return 1;
+                  return a.requestedAt.compareTo(b.requestedAt);
+                });
 
                 // Anunciar nuevas solicitudes por TTS
                 if (availableRequests.isNotEmpty && !isFull) {
@@ -915,34 +964,29 @@ class _DriverActiveRequestsScreenState
     );
   }
 
-  /// Banner cuando el conductor decidió no recibir más pasajeros
   Widget _buildRequestCard(TripModel trip, RideRequestModel request) {
-    return FutureBuilder<UserModel?>(
-      future: _getUserInfo(request.passengerId),
-      builder: (context, userSnapshot) {
-        // Calcular desvío
-        int? deviation = _deviationsCache[request.requestId];
-        if (deviation == null &&
-            !_deviationsCache.containsKey(request.requestId)) {
-          _calculateDeviation(trip, request);
-        }
+    final eta = _etaCache[request.requestId];
+    final user = _usersCache[request.passengerId];
 
-        return RideRequestCard(
-          request: request,
-          passengerUser: userSnapshot.data,
-          deviationMinutes: deviation,
-          onTap: () async {
-            final result = await context.push<String>(
-              '/driver/passenger-request/${widget.tripId}/${request.requestId}',
-            );
-            // Si devolvió un passengerId, lo aceptamos localmente
-            if (result != null && result.isNotEmpty && mounted) {
-              setState(() {
-                _locallyAcceptedIds.add(result);
-              });
-            }
-          },
+    // Disparar fetch si aún no está en cache (se actualizará con setState)
+    if (!_usersCache.containsKey(request.passengerId)) {
+      _getUserInfo(request.passengerId);
+    }
+
+    return RideRequestCard(
+      request: request,
+      passengerUser: user,
+      etaMinutes: eta,
+      onTap: () async {
+        final result = await context.push<String>(
+          '/driver/passenger-request/${widget.tripId}/${request.requestId}',
         );
+        // Si devolvió un passengerId, lo aceptamos localmente
+        if (result != null && result.isNotEmpty && mounted) {
+          setState(() {
+            _locallyAcceptedIds.add(result);
+          });
+        }
       },
     );
   }
@@ -1070,41 +1114,38 @@ class _DriverActiveRequestsScreenState
     try {
       final user = await _firestoreService.getUser(userId);
       _usersCache[userId] = user;
+      if (mounted) setState(() {}); // Actualizar cards con nombre real
       return user;
     } catch (e) {
-      _usersCache[userId] = null;
+      // No cachear en error — permite reintento en el siguiente stream event
       return null;
     }
   }
 
-  Future<void> _calculateDeviation(
+  /// Calcula ETA: tiempo de viaje desde origen del conductor al pickup del pasajero
+  Future<void> _calculateEta(
     TripModel trip,
     RideRequestModel request,
   ) async {
-    if (_currentTrip == null) return;
+    if (_etaCache.containsKey(request.requestId)) return;
 
     try {
-      final acceptedPickups = trip.passengers
-          .where((p) => p.status == 'accepted' && p.pickupPoint != null)
-          .map((p) => p.pickupPoint!)
-          .toList();
-
-      final deviation = await _directionsService.calculateTotalDeviation(
-        origin: trip.origin,
-        destination: trip.destination,
-        acceptedPickups: acceptedPickups,
-        newPickup: request.pickupPoint,
+      final route = await _directionsService.getRoute(
+        originLat: trip.origin.latitude,
+        originLng: trip.origin.longitude,
+        destLat: request.pickupPoint.latitude,
+        destLng: request.pickupPoint.longitude,
       );
 
       if (mounted) {
         setState(() {
-          _deviationsCache[request.requestId] = deviation?.deviationMinutes;
+          _etaCache[request.requestId] = route?.durationMinutes;
         });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _deviationsCache[request.requestId] = null;
+          _etaCache[request.requestId] = null;
         });
       }
     }

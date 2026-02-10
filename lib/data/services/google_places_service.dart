@@ -17,29 +17,38 @@ class GooglePlacesService {
     _places = gmaps.GoogleMapsPlaces(apiKey: _apiKey);
   }
 
+  // Centro de Loja, Ecuador — sesgo por defecto para sugerencias
+  static final _lojaLocation = gmaps.Location(lat: -3.9931, lng: -79.2042);
+
   /// Buscar lugares con autocompletado
   ///
   /// [query] - Texto de búsqueda
-  /// [location] - Ubicación para sesgar resultados (opcional)
-  /// [radius] - Radio en metros para sesgar resultados (opcional)
+  /// [location] - Ubicación para sesgar resultados (default: Loja)
+  /// [radius] - Radio en metros para sesgar resultados (default: 20km)
   /// [language] - Idioma de los resultados (default: español)
   /// [country] - Código de país para restringir resultados (default: Ecuador)
+  /// [strictBounds] - Si es true, solo muestra resultados dentro del radio
   Future<List<PlaceSuggestion>> searchPlaces({
     required String query,
     gmaps.Location? location,
-    int radius = 50000, // 50km por defecto
+    int radius = 20000, // 20km — sesgo fuerte a Loja
     String language = 'es',
     String country = 'ec',
+    bool strictBounds = true,
   }) async {
     if (query.isEmpty || query.length < 2) {
       return [];
     }
 
+    // Usar ubicación proporcionada o Loja como fallback
+    final effectiveLocation = location ?? _lojaLocation;
+
     try {
       final response = await _places.autocomplete(
         query,
-        location: location,
+        location: effectiveLocation,
         radius: radius,
+        strictbounds: strictBounds,
         language: language,
         components: [gmaps.Component(gmaps.Component.country, country)],
       );

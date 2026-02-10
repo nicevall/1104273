@@ -25,10 +25,12 @@ import '../../../data/services/tts_service.dart';
 import '../../../data/services/taximeter_service.dart';
 import '../../../data/services/pricing_service.dart';
 import '../../../data/services/roads_service.dart';
+import '../../../data/services/notification_service.dart';
 import '../../widgets/driver/taximeter_widget.dart';
 import '../../widgets/driver/fare_summary_dialog.dart';
 import '../../../core/utils/car_marker_generator.dart';
 import 'rate_passenger_screen.dart';
+import '../../../data/models/chat_message.dart';
 import '../../../data/services/chat_service.dart';
 import '../../widgets/chat/chat_bottom_sheet.dart';
 import '../../blocs/auth/auth_bloc.dart';
@@ -94,13 +96,14 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   List<RideRequestModel> _pendingRequests = [];
   Stream<List<RideRequestModel>>? _requestsStream;
   final Map<String, UserModel?> _usersCache = {};
-  final Map<String, int?> _deviationsCache = {};
+  final Map<String, int?> _etaCache = {};
   final Set<String> _announcedRequests = {};
   bool _stoppedAccepting = false;
+  DateTime? _lastBackPressTime;
 
   // === Push GPS a Firestore ===
   DateTime? _lastLocationPush;
-  static const _locationPushInterval = Duration(seconds: 3);
+  static const _locationPushInterval = Duration(milliseconds: 1500);
 
   // === Performance: car icon cache + camera throttle ===
   BitmapDescriptor? _carIcon;
@@ -110,10 +113,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
   // === Throttle global de cámara (máx 2 animaciones/seg) ===
   DateTime? _lastCameraAnim;
-  static const _cameraAnimInterval = Duration(milliseconds: 500);
+  static const _cameraAnimInterval = Duration(milliseconds: 300);
 
-  // === Auto-completar viaje al llegar al destino ===
-  bool _hasTriggeredAutoComplete = false;
 
   // === Cache para evitar _updateTripMarkers innecesarios ===
   String _lastTripMarkersHash = '';
@@ -124,6 +125,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   Timer? _waitTimer;
   int _waitSecondsRemaining = 0;
   bool _isPausedForPickup = false;
+  bool _waitTimerExpired = false;
+  final Set<String> _processedPickups = {}; // Pickups ya procesados (evita re-trigger)
 
   // === Taxímetro ===
   final _taximeterService = TaximeterService();
@@ -131,6 +134,18 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   final Map<String, String> _passengerNames = {};
   DateTime? _lastMeterSync;
   static const _meterSyncInterval = Duration(seconds: 30);
+
+  // === Chat: unread messages por pasajero ===
+  final Map<String, int> _unreadCounts = {}; // passengerId → unread count
+  final Map<String, int> _lastSeenCounts = {}; // passengerId → last seen count
+  final Map<String, StreamSubscription<List<ChatMessage>>> _chatSubs = {};
+  String? _selectedChatPassengerId; // Tab activo del chat (browser-tab style)
+
+  // === Bottom sheet de espera: expandido = timer expirado ===
+  bool _waitSheetExpanded = false;
+
+  // === Suscripción a eventos de abrir chat desde notificaciones ===
+  StreamSubscription<Map<String, String>>? _openChatSub;
 
   // === Animaciones ===
   late AnimationController _pulseController;
@@ -142,11 +157,14 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Suprimir notificaciones de solicitudes (ya las ve en la pantalla)
+    NotificationService().suppressType('new_ride_request');
     _initAnimations();
     _loadCarIcon();
     _startLocationTracking();
     _startCompass();
     _loadInitialData();
+    _listenForChatOpen();
   }
 
   @override
@@ -171,15 +189,21 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     }
   }
 
+  /// Interceptar back del sistema cuando esta pantalla es la ruta raíz
+  @override
+  Future<bool> didPopRoute() async {
+    await _onWillPop();
+    return true; // true = ya manejamos el evento, no salir de la app
+  }
+
   /// Escuchar brújula del dispositivo para orientar la cámara
   double _lastCompassBearing = 0; // Último bearing aplicado a la cámara
   DateTime? _lastCompassUpdate;
   static const _compassInterval = Duration(milliseconds: 300);
 
-  // TODO(prod): Cambiar a true para producción (usa brújula real del dispositivo)
-  // En false: el mapa se orienta según la dirección de movimiento del GPS/Joystick
+  // Brújula real activada (producción)
   // En true: el mapa se orienta según el giroscopio/magnetómetro del teléfono
-  static const _useCompass = false;
+  static const _useCompass = true;
 
   /// Throttle para movimiento GPS de cámara (posición)
   void _animateCameraThrottled(LatLng target, double bearing) {
@@ -192,6 +216,46 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         CameraPosition(target: target, zoom: 17, bearing: bearing),
       ),
     );
+  }
+
+  /// Escuchar eventos de abrir chat desde notificaciones tocadas
+  void _listenForChatOpen() {
+    _openChatSub = NotificationService().onOpenChatRequested.listen((data) {
+      final tripId = data['tripId'] ?? '';
+      final passengerId = data['passengerId'] ?? '';
+      if (tripId != widget.tripId || !mounted) return;
+
+      // Buscar el pasajero que envió el mensaje
+      String chatPassengerId = passengerId;
+      if (chatPassengerId.isEmpty && _currentTrip != null) {
+        // Si no viene passengerId, usar el primer pasajero accepted/picked_up
+        final eligible = _currentTrip!.passengers.where(
+          (p) => p.status == 'accepted' || p.status == 'picked_up',
+        );
+        if (eligible.isNotEmpty) chatPassengerId = eligible.first.userId;
+      }
+
+      if (chatPassengerId.isEmpty) return;
+
+      final name = _passengerNames[chatPassengerId] ?? 'Pasajero';
+      final passenger = _currentTrip?.passengers.firstWhere(
+        (p) => p.userId == chatPassengerId,
+        orElse: () => _currentTrip!.passengers.first,
+      );
+      final isActive = passenger?.status == 'accepted';
+
+      debugPrint('🔔 Abriendo chat desde notificación: $chatPassengerId');
+
+      ChatBottomSheet.show(
+        context,
+        tripId: widget.tripId,
+        passengerId: chatPassengerId,
+        currentUserId: _currentTrip?.driverId ?? '',
+        currentUserRole: 'conductor',
+        isActive: isActive,
+        otherUserName: name,
+      );
+    });
   }
 
   void _startCompass() {
@@ -290,10 +354,9 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         return;
       }
 
-      // TODO(prod): Cambiar a LocationAccuracy.high para producción
-      // LocationAccuracy.low permite que Fake GPS funcione para testing
+      // GPS de alta precisión (producción)
       final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.low,
+        desiredAccuracy: LocationAccuracy.high,
       );
 
       if (mounted) {
@@ -303,8 +366,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
       _positionStream = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
-          // TODO(prod): Cambiar a LocationAccuracy.high para producción
-          accuracy: LocationAccuracy.low,
+          // GPS de alta precisión (producción)
+          accuracy: LocationAccuracy.high,
           distanceFilter: 3,
         ),
       ).listen((position) {
@@ -347,8 +410,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         position.latitude,
         position.longitude,
       );
-      // Fix C3: threshold 3m para recalcular bearing (antes 1m)
-      if (dist > 3) {
+      // Recalcular bearing con threshold de 2m
+      if (dist > 2) {
         carHeading = Geolocator.bearingBetween(
           _lastValidPosition!.latitude,
           _lastValidPosition!.longitude,
@@ -358,11 +421,11 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       }
     }
 
-    // Calcular si la posición cambió visiblemente (>2m)
+    // Calcular si la posición cambió visiblemente (>1m)
     final posChanged = Geolocator.distanceBetween(
       _lastCameraLat, _lastCameraLng,
       position.latitude, position.longitude,
-    ) > 2;
+    ) > 1;
 
     _lastValidPosition = position;
     _lastGpsTimestamp = now;
@@ -383,32 +446,41 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       );
       newDistToNext = distToEnd;
 
+      // Preview: a <100m del fin del step actual, anunciar "Luego, [siguiente]"
       if (distToEnd < 100 && !_hasAnnouncedCurrentStep) {
         newHasAnnounced = true;
+        final distText = 'En ${distToEnd.round()} metros';
         if (_currentStepIndex + 1 < _currentRoute!.steps.length) {
           final nextStep = _currentRoute!.steps[_currentStepIndex + 1];
-          final distText = distToEnd < 100
-              ? 'En ${distToEnd.round()} metros'
-              : 'En ${(distToEnd / 1000).toStringAsFixed(1)} kilómetros';
-          _ttsService.speakNavigation('$distText, ${nextStep.instruction}');
+          _ttsService.speakNavigation('$distText, luego ${nextStep.instruction}');
         } else {
           _ttsService.speakNavigation('Estás llegando a tu destino.');
         }
       }
 
+      // Avanzar al siguiente step cuando está a <30m del endpoint
       if (distToEnd < 30) {
         newStepIndex = _currentStepIndex + 1;
         newHasAnnounced = false;
+        // Anunciar la instrucción del nuevo step actual al entrar
+        if (newStepIndex < _currentRoute!.steps.length) {
+          final newStep = _currentRoute!.steps[newStepIndex];
+          _ttsService.speakNavigation(newStep.instruction);
+        }
       }
     }
 
     final navChanged = newStepIndex != _currentStepIndex;
 
-    // 3. Taxímetro
+    // 3. Taxímetro (con groupSize para descuento grupal)
     Map<String, TaximeterSession>? updatedMeterSessions;
     if (_taximeterService.hasActiveSessions) {
+      final pickedUpCount = _currentTrip?.passengers
+          .where((p) => p.status == 'picked_up')
+          .length ?? 0;
       final updated = _taximeterService.onGpsUpdate(
         position.latitude, position.longitude, DateTime.now(),
+        groupSize: pickedUpCount > 0 ? pickedUpCount : 1,
       );
       updatedMeterSessions = Map.from(updated);
     }
@@ -417,13 +489,13 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
     // Fix C2: Solo setState si algo cambió visiblemente
     if (posChanged || navChanged || meterChanged) {
-      // 1. Marker — posición GPS directa, rotación = dirección de movimiento
+      // 1. Marker — posición GPS directa, rotación sigue el bearing
       final driverMarker = Marker(
         markerId: const MarkerId('driver'),
         position: LatLng(position.latitude, position.longitude),
         icon: _carIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
         anchor: const Offset(0.5, 0.5),
-        rotation: carHeading,
+        rotation: _useCompass ? _compassHeading : _lastCameraHeading,
         flat: true,
       );
 
@@ -448,7 +520,6 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     _pushLocationToFirestore(); // Snap to roads se hace AQUÍ, async
     _syncMetersToFirestore();
     _checkOffRoute();
-    _checkArrivalAtDestination();
 
     // 5. Camera throttled — sigue al conductor
     // Con brújula: _compassHeading (giroscopio del teléfono)
@@ -491,7 +562,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       position: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
       icon: _carIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
       anchor: const Offset(0.5, 0.5),
-      rotation: heading,
+      rotation: 0, // Siempre apunta al norte — el mapa rota con bearing
       flat: true,
     );
 
@@ -584,9 +655,33 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       );
 
       if (route != null && mounted) {
+        // Encontrar el step en el que está el conductor actualmente
+        // Busca el step cuyo startLocation está más cerca Y cuyo endLocation está más lejos
+        // (es decir, el conductor está "dentro" del step, avanzando hacia el end)
+        int closestStep = 0;
+        if (_currentPosition != null && route.steps.isNotEmpty) {
+          double minDist = double.infinity;
+          for (int i = 0; i < route.steps.length; i++) {
+            final distToStart = Geolocator.distanceBetween(
+              _currentPosition!.latitude, _currentPosition!.longitude,
+              route.steps[i].startLocation.latitude, route.steps[i].startLocation.longitude,
+            );
+            final distToEnd = Geolocator.distanceBetween(
+              _currentPosition!.latitude, _currentPosition!.longitude,
+              route.steps[i].endLocation.latitude, route.steps[i].endLocation.longitude,
+            );
+            // El conductor está en este step si está cerca del inicio
+            // y el final está más lejos (aún no lo completó)
+            if (distToStart < minDist && distToEnd >= distToStart) {
+              minDist = distToStart;
+              closestStep = i;
+            }
+          }
+        }
+
         setState(() {
           _currentRoute = route;
-          _currentStepIndex = 0;
+          _currentStepIndex = closestStep;
           _hasAnnouncedCurrentStep = false;
 
           // Dibujar polyline turquesa
@@ -601,10 +696,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
           };
         });
 
-        // Anunciar primera instrucción
-        if (route.steps.isNotEmpty) {
-          final firstStep = route.steps[0];
-          await _ttsService.speakNavigation(firstStep.instruction);
+        // Anunciar instrucción del paso actual
+        if (route.steps.isNotEmpty && closestStep < route.steps.length) {
+          final currentStep = route.steps[closestStep];
+          await _ttsService.speakNavigation(currentStep.instruction);
           _hasAnnouncedCurrentStep = true;
         }
       }
@@ -623,7 +718,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // para evitar múltiples setState() por tick GPS
 
   DateTime? _lastOffRouteCheck;
-  static const _offRouteCheckInterval = Duration(seconds: 10);
+  static const _offRouteCheckInterval = Duration(seconds: 5);
 
   void _checkOffRoute() {
     if (_currentRoute == null || _currentPosition == null) return;
@@ -652,8 +747,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       if (minDist < 50) break; // Ya está cerca, no seguir buscando
     }
 
-    // Si está a más de 150m de la ruta → recalcular
-    if (minDist > 150) {
+    // Si está a más de 80m de la ruta → recalcular
+    if (minDist > 80) {
       debugPrint('Conductor se desvió ${minDist.round()}m, recalculando ruta...');
       _ttsService.speakAnnouncement('Recalculando ruta.');
       _calculateRoute();
@@ -664,69 +759,44 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // AUTO-COMPLETAR VIAJE AL LLEGAR AL DESTINO
   // ============================================================
 
-  void _checkArrivalAtDestination() {
-    if (_currentTrip == null || _currentPosition == null) return;
-    if (_hasTriggeredAutoComplete) return;
-
-    // Solo verificar si hay pasajeros picked_up (viaje activamente en curso)
-    final pickedUpPassengers = _currentTrip!.passengers
-        .where((p) => p.status == 'picked_up')
-        .toList();
-    if (pickedUpPassengers.isEmpty) return;
-
-    final distToDestination = Geolocator.distanceBetween(
-      _currentPosition!.latitude,
-      _currentPosition!.longitude,
-      _currentTrip!.destination.latitude,
-      _currentTrip!.destination.longitude,
-    );
-
-    // 80m threshold (más amplio que pickup porque destinos universitarios son áreas grandes)
-    if (distToDestination < 80) {
-      _hasTriggeredAutoComplete = true;
-      debugPrint('🏁 Llegó al destino (${distToDestination.round()}m), mostrando overlay de pago...');
-      _ttsService.speakAnnouncement('Has llegado al destino. Confirma el pago de cada pasajero.');
-      _showDestinationPaymentSheet();
-    }
-  }
-
-  /// Mostrar overlay de pago por pasajero al llegar al destino
-  Future<void> _showDestinationPaymentSheet() async {
+  /// Mostrar bottom sheet con tabs de pago por pasajero al finalizar viaje
+  Future<void> _showPaymentTabsSheet({List<TripPassenger>? forcePassengers}) async {
     if (!mounted || _currentTrip == null) return;
 
-    // Obtener pasajeros picked_up que necesitan pago
-    final pickedUpPassengers = _currentTrip!.passengers
-        .where((p) => p.status == 'picked_up')
-        .toList();
+    // Capturar driverId AHORA antes de que _currentTrip pueda cambiar
+    final driverId = _currentTrip!.driverId;
+
+    // Usar pasajeros forzados si se pasan, o buscar picked_up actuales
+    final pickedUpPassengers = forcePassengers ??
+        _currentTrip!.passengers
+            .where((p) => p.status == 'picked_up')
+            .toList();
+
+    debugPrint('💰 _showPaymentTabsSheet: ${pickedUpPassengers.length} pasajeros (forced=${forcePassengers != null})');
 
     if (pickedUpPassengers.isEmpty) {
-      // No hay pasajeros, completar directamente
+      debugPrint('💰 No hay pasajeros picked_up, finalizando directo');
       _finalizeTrip();
       return;
     }
 
-    // Procesar cada pasajero secuencialmente
+    // 1. Detener TODOS los taxímetros y guardar sesiones
+    final Map<String, TaximeterSession> sessions = {};
     for (final passenger in pickedUpPassengers) {
-      if (!mounted) break;
+      final session = _taximeterService.stopMeter(passenger.userId);
+      if (session != null) sessions[passenger.userId] = session;
 
-      // Detener taxímetro para este pasajero
-      final finalSession = _taximeterService.stopMeter(passenger.userId);
-      if (finalSession == null) continue;
-
-      final name = _passengerNames[passenger.userId] ?? 'Pasajero';
-
-      // Actualizar estado en Firestore
+      // Drop off en Firestore
       try {
         await _tripsService.dropOffPassenger(
           widget.tripId,
           passenger.userId,
-          finalFare: finalSession.currentFare,
+          finalFare: session?.currentFare ?? 0,
           dropoffLatitude: _currentPosition?.latitude ?? 0,
           dropoffLongitude: _currentPosition?.longitude ?? 0,
-          totalDistanceKm: finalSession.totalDistanceKm,
-          totalWaitMinutes: finalSession.totalWaitMinutes,
+          totalDistanceKm: session?.totalDistanceKm ?? 0,
+          totalWaitMinutes: session?.totalWaitMinutes ?? 0,
         );
-
         if (mounted) {
           context.read<TripBloc>().add(
             UpdatePassengerStatusEvent(
@@ -737,65 +807,91 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
           );
         }
       } catch (e) {
-        debugPrint('Error en drop-off automático: $e');
+        debugPrint('Error en drop-off: $e');
       }
+    }
 
-      // Actualizar UI
-      setState(() {
-        _activeMeterSessions.remove(passenger.userId);
-      });
+    // 2. Limpiar UI de taxímetros
+    setState(() {
+      _activeMeterSessions.clear();
+    });
 
-      // Mostrar diálogo de pago
-      if (mounted) {
-        final pagoConfirmado = await FareSummaryDialog.show(
-          context,
-          passengerName: name,
-          session: finalSession,
-          paymentMethod: passenger.paymentMethod,
-        );
+    // 3. TTS
+    await _ttsService.speakAnnouncement(
+      'Viaje finalizado. Confirma el pago de cada pasajero.',
+    );
 
-        if (pagoConfirmado == true && mounted) {
-          // Marcar pago como recibido
-          try {
-            await _tripsService.updatePassengerPaymentStatus(
-              widget.tripId,
-              passenger.userId,
-              'paid',
-            );
-          } catch (e) {
-            debugPrint('Error actualizando pago: $e');
-          }
+    // 4. Mostrar bottom sheet con tabs (o directo si solo hay 1)
+    if (!mounted) return;
 
-          // Calificar al pasajero
-          if (mounted) {
-            await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => RatePassengerScreen(
-                  tripId: widget.tripId,
-                  driverId: _currentTrip?.driverId ?? '',
-                  passengerId: passenger.userId,
-                  passengerName: name,
-                  fare: finalSession.currentFare,
-                ),
-              ),
-            );
-          }
+    final paymentResults = await showModalBottomSheet<Map<String, String>>(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => _PaymentTabsSheet(
+        passengers: pickedUpPassengers,
+        sessions: sessions,
+        passengerNames: _passengerNames,
+        tripId: widget.tripId,
+        tripsService: _tripsService,
+        firestoreService: FirestoreService(),
+      ),
+    );
+
+    // 5. Actualizar pagos en Firestore según resultados
+    if (paymentResults != null && mounted) {
+      for (final entry in paymentResults.entries) {
+        final passengerId = entry.key;
+        final status = entry.value; // 'paid' o 'unpaid'
+        try {
+          await _tripsService.updatePassengerPaymentStatus(
+            widget.tripId,
+            passengerId,
+            status,
+          );
+        } catch (e) {
+          debugPrint('Error actualizando pago de $passengerId: $e');
         }
       }
     }
 
-    // Todos los pasajeros procesados — completar viaje
+    // 6. Calificar a cada pasajero secuencialmente
+    for (final passenger in pickedUpPassengers) {
+      if (!mounted) break;
+      final name = _passengerNames[passenger.userId] ?? 'Pasajero';
+      final session = sessions[passenger.userId];
+      debugPrint('💰 Mostrando rating para ${passenger.userId} ($name)');
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => RatePassengerScreen(
+            tripId: widget.tripId,
+            driverId: driverId,
+            passengerId: passenger.userId,
+            passengerName: name,
+            fare: session?.currentFare ?? 0,
+          ),
+        ),
+      );
+    }
+
+    // 7. Finalizar viaje
+    debugPrint('💰 Todos los pasajeros procesados → finalizando viaje');
     _finalizeTrip();
   }
 
   /// Completar el viaje (enviar evento al BLoC)
-  void _finalizeTrip() {
+  /// Await TTS para que termine de hablar antes de navegar a home
+  Future<void> _finalizeTrip() async {
     if (mounted) {
-      _ttsService.speakAnnouncement('Viaje finalizado. ¡Buen viaje!');
-      context.read<TripBloc>().add(
-            CompleteTripEvent(tripId: widget.tripId),
-          );
+      await _ttsService.speakAnnouncement('Viaje finalizado. ¡Buen viaje!');
+      if (mounted) {
+        context.read<TripBloc>().add(
+              CompleteTripEvent(tripId: widget.tripId),
+            );
+      }
     }
   }
 
@@ -804,22 +900,35 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // ============================================================
 
   void _announceNewRequests(List<RideRequestModel> requests) {
+    print('[TTS-DEBUG] _announceNewRequests llamado con ${requests.length} requests. Ya anunciados: ${_announcedRequests.length}');
     for (final request in requests) {
+      print('[TTS-DEBUG] Revisando request ${request.requestId} - ya anunciado: ${_announcedRequests.contains(request.requestId)}');
       if (_announcedRequests.contains(request.requestId)) continue;
       _announcedRequests.add(request.requestId);
 
-      // Construir texto para TTS
-      _getUserInfo(request.passengerId).then((user) {
+      print('[TTS-DEBUG] NUEVO request ${request.requestId} (pasajero: ${request.passengerId}, pago: ${request.paymentMethod})');
+
+      // Obtener info del usuario y calcular ETA en paralelo
+      final userFuture = _getUserInfo(request.passengerId);
+      final etaFuture = _calculateEta(request);
+
+      Future.wait<dynamic>([etaFuture, userFuture]).then((results) {
+        if (!mounted) return;
+        final user = results[1] as UserModel?;
         final name = user?.firstName ?? 'Un pasajero';
         final pickup = request.pickupPoint.name;
-        final deviation = _deviationsCache[request.requestId];
+        final eta = _etaCache[request.requestId];
+
+        print('[TTS-DEBUG] user=${user?.firstName}, eta=$eta, paymentMethod=${request.paymentMethod}');
 
         final buffer = StringBuffer();
-        buffer.write('Nueva solicitud. $name quiere que lo recojas en $pickup, pago con ${request.paymentMethod.toLowerCase()}.');
+        buffer.write('Nueva solicitud. $name en $pickup.');
 
-        if (deviation != null) {
-          buffer.write(' Desvío de $deviation minutos.');
+        if (eta != null) {
+          buffer.write(' Está a $eta minutos.');
         }
+
+        buffer.write(' Pago con: ${request.paymentMethod.toLowerCase()}.');
 
         if (request.hasPet) {
           buffer.write(' Lleva mascota.');
@@ -828,7 +937,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
           buffer.write(' Lleva objeto grande.');
         }
 
+        print('[TTS-DEBUG] Texto final: ${buffer.toString()}');
         _ttsService.speakRequest(buffer.toString());
+      }).catchError((e) {
+        print('[TTS-DEBUG] ERROR: $e');
       });
     }
   }
@@ -843,7 +955,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     }
 
     final pendingPickups = _currentTrip!.passengers.where(
-      (p) => p.status == 'accepted' && p.pickupPoint != null,
+      (p) => p.status == 'accepted' && p.pickupPoint != null && !_processedPickups.contains(p.userId),
     ).toList();
 
     for (final passenger in pendingPickups) {
@@ -854,7 +966,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         passenger.pickupPoint!.longitude,
       );
 
+      debugPrint('📍 Distancia al pickup de ${passenger.userId}: ${distance.toStringAsFixed(1)}m (umbral: 50m)');
+
       if (distance < 50) {
+        _processedPickups.add(passenger.userId);
         _ttsService.speakAnnouncement(
           'Has llegado al punto de recogida del pasajero.',
         );
@@ -877,12 +992,14 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       _waitSecondsRemaining = maxWait * 60;
     });
 
-    // Escribir timestamp en Firestore para sincronizar con pasajero
+    // Escribir timestamp + flag en Firestore para sincronizar con pasajero
+    // driverArrivedNotified: true dispara la Cloud Function de notificación
     FirebaseFirestore.instance
         .collection('trips')
         .doc(widget.tripId)
         .update({
       'waitingStartedAt': FieldValue.serverTimestamp(),
+      'driverArrivedNotified': true,
     });
 
     debugPrint('⏱️ Timer de espera iniciado: ${maxWait}min');
@@ -892,9 +1009,21 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         setState(() => _waitSecondsRemaining--);
       } else {
         timer.cancel();
-        _showPassengerArrivedDialog();
+        setState(() => _waitTimerExpired = true);
+        // Auto-expandir el bottom sheet al expirar
+        _expandWaitSheet();
       }
     });
+  }
+
+  /// Expande el bottom sheet de espera (expired view con gracia)
+  void _expandWaitSheet() {
+    if (mounted) setState(() => _waitSheetExpanded = true);
+  }
+
+  /// Colapsa el bottom sheet de espera (timer activo)
+  void _collapseWaitSheet() {
+    if (mounted) setState(() => _waitSheetExpanded = false);
   }
 
   /// Reinicia el timer con minutos de gracia extra
@@ -902,7 +1031,11 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     _waitTimer?.cancel();
     setState(() {
       _waitSecondsRemaining = graceMinutes * 60;
+      _waitTimerExpired = false;
     });
+
+    // Colapsar el sheet de vuelta al tamaño normal
+    _collapseWaitSheet();
 
     // Actualizar en Firestore para sincronizar con pasajero
     FirebaseFirestore.instance
@@ -920,131 +1053,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         setState(() => _waitSecondsRemaining--);
       } else {
         timer.cancel();
-        _showPassengerArrivedDialog();
+        setState(() => _waitTimerExpired = true);
+        _expandWaitSheet();
       }
     });
-  }
-
-  void _showPassengerArrivedDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.timer_off, color: AppColors.warning),
-            SizedBox(width: 12),
-            Expanded(child: Text('Se acabó el tiempo')),
-          ],
-        ),
-        content: const Text(
-          '¿El pasajero llegó? También puedes darle más tiempo de gracia.',
-        ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        actionsPadding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
-        actions: [
-          // Fila 1: Botones de gracia
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _restartTimerWithGrace(1);
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.primary),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text('+1 min'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _restartTimerWithGrace(2);
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.primary),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text('+2 min'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _restartTimerWithGrace(3);
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.primary),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text('+3 min'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // Fila 2: No llegó / Ya subió
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _handlePassengerNoShow();
-                  },
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.error,
-                    side: const BorderSide(color: AppColors.error),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text('No llegó'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _handlePassengerPickedUp();
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.success,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: const Text('Ya subió'),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
   }
 
   /// Restaurar taxímetros desde Firestore para pasajeros que ya están picked_up
@@ -1074,6 +1086,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         fare: p.meterFare ?? 0,
         currentLat: _currentPosition?.latitude ?? startLat,
         currentLng: _currentPosition?.longitude ?? startLng,
+        groupSize: pickedUp.length,
       );
 
       _activeMeterSessions[p.userId] = session;
@@ -1094,7 +1107,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     _hasRestoredTaximeters = true;
   }
 
-  void _handlePassengerPickedUp() {
+  Future<void> _handlePassengerPickedUp() async {
     if (_waitingForPassenger == null || _currentTrip == null) return;
 
     final passengerId = _waitingForPassenger!.userId;
@@ -1107,12 +1120,16 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       ),
     );
 
-    // === Iniciar taxímetro para este pasajero ===
+    // === Iniciar taxímetro para este pasajero (con groupSize para descuento) ===
     if (_currentPosition != null) {
+      final currentPickedUp = _currentTrip!.passengers
+          .where((p) => p.status == 'picked_up')
+          .length;
       final session = _taximeterService.startMeter(
         passengerId: passengerId,
         lat: _currentPosition!.latitude,
         lng: _currentPosition!.longitude,
+        groupSize: currentPickedUp > 0 ? currentPickedUp : 1,
       );
       setState(() {
         _activeMeterSessions = {
@@ -1148,7 +1165,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
           '(${session.isNightTariff ? "Nocturna" : "Diurna"})');
     }
 
-    _ttsService.speakAnnouncement('Pasajero recogido. Taxímetro iniciado.');
+    await _ttsService.speakAnnouncement('Pasajero recogido. Taxímetro iniciado.');
 
     // Desactivar chat con este pasajero (chat solo activo en status 'accepted')
     _chatService.deactivateChat(widget.tripId, passengerId);
@@ -1264,6 +1281,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       _isPausedForPickup = false;
       _waitingForPassenger = null;
       _waitSecondsRemaining = 0;
+      _waitTimerExpired = false;
+      _waitSheetExpanded = false;
     });
   }
 
@@ -1275,17 +1294,9 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     final result = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.warning_amber, color: AppColors.warning),
-            SizedBox(width: 12),
-            Text('¿Cancelar viaje?'),
-          ],
-        ),
+        title: const Text('¿Cancelar viaje?'),
         content: const Text(
-          'Si sales ahora, el viaje se cancelará y los pasajeros '
-          'que hayas aceptado serán notificados.\n\n'
-          '¿Estás seguro de que quieres cancelar?',
+          'Los pasajeros que hayas aceptado serán notificados.',
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         actionsAlignment: MainAxisAlignment.center,
@@ -1304,7 +1315,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text('Continuar viaje'),
+                  child: const Text('Continuar'),
                 ),
               ),
               const SizedBox(width: 16),
@@ -1319,7 +1330,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text('Sí, cancelar'),
+                  child: const Text('Cancelar'),
                 ),
               ),
             ],
@@ -1330,7 +1341,6 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
     if (result == true) {
       context.read<TripBloc>().add(CancelTripEvent(tripId: widget.tripId));
-      await _ttsService.stop();
       _navigateToHome();
     }
 
@@ -1375,6 +1385,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
           meterDistanceKm: session.totalDistanceKm,
           meterWaitMinutes: session.totalWaitMinutes,
           meterFare: session.currentFare,
+          discountPercent: session.discountPercent,
+          fareBeforeDiscount: session.fareBeforeDiscount,
         );
         _taximeterService.markSynced(session.passengerId);
         debugPrint('📡 Sync taxímetro ${session.passengerId}: '
@@ -1503,8 +1515,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       _activeMeterSessions.remove(passengerId);
     });
 
-    // TTS
-    _ttsService.speakAnnouncement(
+    // TTS — esperar a que termine antes de mostrar diálogo
+    await _ttsService.speakAnnouncement(
       'Pasajero dejado. Tarifa: \$${finalSession.currentFare.toStringAsFixed(2)}',
     );
 
@@ -1544,12 +1556,291 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
             ),
           );
         }
+      } else if (pagoConfirmado == false && mounted) {
+        // Flujo "No pagó" — confirmación + razón obligatoria + strike
+        await _handleUnpaidPassenger(passengerId, name, finalSession);
       }
     }
 
     // Recalcular ruta si quedan pasajeros
     if (_taximeterService.hasActiveSessions) {
       _calculateRoute();
+    }
+  }
+
+  /// Flujo cuando el conductor reporta "No pagó"
+  /// 1. Confirmación  2. Razón obligatoria (10-100 chars)  3. Strike + guardar
+  Future<void> _handleUnpaidPassenger(
+    String passengerId,
+    String passengerName,
+    TaximeterSession session,
+  ) async {
+    // ── Paso 1: Confirmación ──
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Estás seguro?'),
+        content: Text(
+          'Reportar que $passengerName no realizó el pago.\n\n'
+          'Esto aplicará un strike a su cuenta.',
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Cancelar'),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text(
+                    'Sí, no pagó',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    // ── Paso 2: Razón obligatoria ──
+    final reasonController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    final reason = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: const Text('Describe la situación'),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Explica brevemente por qué $passengerName no pagó.',
+                      style: AppTextStyles.body2.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: reasonController,
+                      maxLength: 100,
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        hintText: 'Ej: Se bajó sin pagar, dijo que no tenía efectivo...',
+                        hintStyle: TextStyle(
+                          color: AppColors.textTertiary,
+                          fontSize: 13,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: AppColors.primary),
+                        ),
+                        contentPadding: const EdgeInsets.all(12),
+                      ),
+                      onChanged: (_) => setDialogState(() {}),
+                      validator: (value) {
+                        if (value == null || value.trim().length < 10) {
+                          return 'Mínimo 10 caracteres';
+                        }
+                        return null;
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              actionsAlignment: MainAxisAlignment.center,
+              actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+              actions: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(ctx, null),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.textSecondary,
+                          side: const BorderSide(color: AppColors.border),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: const Text('Cancelar'),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: reasonController.text.trim().length >= 10
+                            ? () {
+                                if (formKey.currentState!.validate()) {
+                                  Navigator.pop(
+                                    ctx,
+                                    reasonController.text.trim(),
+                                  );
+                                }
+                              }
+                            : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.error,
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor: AppColors.error.withValues(alpha: 0.4),
+                          disabledForegroundColor: Colors.white70,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: const Text(
+                          'Reportar',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    reasonController.dispose();
+
+    if (reason == null || !mounted) return;
+
+    // ── Paso 3: Guardar en Firestore + aplicar strike ──
+    try {
+      // Actualizar paymentStatus a 'unpaid' con nota
+      await _tripsService.updatePassengerPaymentStatus(
+        widget.tripId,
+        passengerId,
+        'unpaid',
+        paymentNote: reason,
+      );
+
+      // Aplicar strike al pasajero
+      final newStrikes = await _firestoreService.applyPaymentStrike(passengerId);
+
+      if (mounted) {
+        String strikeMsg;
+        if (newStrikes >= 3) {
+          strikeMsg = 'La cuenta de $passengerName ha sido bloqueada permanentemente (Strike 3/3).';
+        } else if (newStrikes == 2) {
+          strikeMsg = 'Strike $newStrikes/3 aplicado. $passengerName suspendido por 2 semanas.';
+        } else {
+          strikeMsg = 'Strike $newStrikes/3 aplicado. $passengerName suspendido por 1 semana.';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(strikeMsg),
+            backgroundColor: AppColors.error,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error al reportar falta de pago: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al reportar: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
+
+    // ── Paso 4: Navegar a pantalla de calificación ──
+    if (mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => RatePassengerScreen(
+            tripId: widget.tripId,
+            driverId: _currentTrip?.driverId ?? '',
+            passengerId: passengerId,
+            passengerName: passengerName,
+            fare: session.currentFare,
+          ),
+        ),
+      );
+    }
+  }
+
+  /// Restaurar taxímetros de emergencia para pasajeros picked_up
+  /// cuando se perdieron las sesiones (ej: hot restart, reconexión)
+  void _restoreTaximetersForFinish(List<TripPassenger> pickedUp) {
+    for (final p in pickedUp) {
+      if (_taximeterService.getSession(p.userId) != null) continue;
+
+      final startLat = p.pickupPoint?.latitude ?? _currentPosition?.latitude ?? 0;
+      final startLng = p.pickupPoint?.longitude ?? _currentPosition?.longitude ?? 0;
+      final session = _taximeterService.restoreMeter(
+        passengerId: p.userId,
+        startTime: p.pickedUpAt ?? DateTime.now(),
+        startLat: startLat,
+        startLng: startLng,
+        isNightTariff: p.isNightTariff ?? PricingService().isNightTime(),
+        distanceKm: p.meterDistanceKm ?? 0,
+        waitMinutes: p.meterWaitMinutes ?? 0,
+        fare: p.meterFare ?? 0,
+        currentLat: _currentPosition?.latitude ?? startLat,
+        currentLng: _currentPosition?.longitude ?? startLng,
+        groupSize: pickedUp.length,
+      );
+
+      _activeMeterSessions[p.userId] = session;
+      _passengerNames.putIfAbsent(p.userId, () => 'Pasajero');
+      _getUserInfo(p.userId).then((user) {
+        if (user != null && mounted) {
+          setState(() => _passengerNames[p.userId] = user.firstName);
+        }
+      });
+
+      debugPrint('🔄 Taxímetro restaurado (finish) para ${p.userId}: \$${session.currentFare.toStringAsFixed(2)}');
     }
   }
 
@@ -1591,12 +1882,41 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
               Expanded(
                 child: ElevatedButton(
                   onPressed: () async {
+                    // CAPTURAR datos ANTES de cerrar diálogo
+                    // _currentTrip puede cambiar por StreamBuilder en cualquier momento
+                    var pickedUp = _currentTrip?.passengers
+                        .where((p) => p.status == 'picked_up')
+                        .toList() ?? [];
+
+                    final hasMeters = _taximeterService.hasActiveSessions;
+
+                    debugPrint('💰 Finalizar: ${pickedUp.length} picked_up, '
+                        'hasActiveSessions=$hasMeters, '
+                        'meterCount=${_taximeterService.activeCount}');
+
+                    // Si hay taxímetros activos pero 0 picked_up en _currentTrip,
+                    // reconstruir la lista desde los taxímetros activos
+                    if (pickedUp.isEmpty && hasMeters) {
+                      final meterPassengerIds = _taximeterService.activeSessions
+                          .map((s) => s.passengerId)
+                          .toList();
+                      pickedUp = (_currentTrip?.passengers ?? [])
+                          .where((p) => meterPassengerIds.contains(p.userId))
+                          .toList();
+                      debugPrint('💰 Reconstruido desde taxímetros: ${pickedUp.length} pasajeros');
+                    }
+
                     Navigator.pop(ctx);
-                    // Mostrar flujo de pago por pasajero + rating
-                    if (_taximeterService.hasActiveSessions) {
-                      await _showDestinationPaymentSheet();
+
+                    if (pickedUp.isNotEmpty) {
+                      // Restaurar taxímetros si se perdieron las sesiones
+                      if (!hasMeters) {
+                        _restoreTaximetersForFinish(pickedUp);
+                      }
+                      await _showPaymentTabsSheet(forcePassengers: pickedUp);
                     } else {
-                      // No hay taxímetros activos, finalizar directamente
+                      // No hay pasajeros ni taxímetros, finalizar directamente
+                      debugPrint('💰 No hay pasajeros ni taxímetros → finalizar directo');
                       _finalizeTrip();
                     }
                   },
@@ -1622,32 +1942,40 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // HELPERS DE DATOS
   // ============================================================
 
-  Future<void> _calculateDeviation(RideRequestModel request) async {
-    if (_currentTrip == null) return;
-    if (_deviationsCache.containsKey(request.requestId)) return;
+  /// Calcula ETA: tiempo de viaje desde posición actual del conductor al pickup del pasajero
+  Future<void> _calculateEta(RideRequestModel request) async {
+    if (_etaCache.containsKey(request.requestId)) return;
+
+    // Usar posición actual del conductor, o posición del trip origin como fallback
+    final driverLat = _currentPosition?.latitude ?? _currentTrip?.origin.latitude;
+    final driverLng = _currentPosition?.longitude ?? _currentTrip?.origin.longitude;
+    if (driverLat == null || driverLng == null) {
+      print('[ETA-DEBUG] sin posicion del conductor, no se puede calcular');
+      return;
+    }
+
+    print('[ETA-DEBUG] calculando desde ($driverLat, $driverLng) a (${request.pickupPoint.latitude}, ${request.pickupPoint.longitude})');
 
     try {
-      final acceptedPickups = _currentTrip!.passengers
-          .where((p) => p.status == 'accepted' && p.pickupPoint != null)
-          .map((p) => p.pickupPoint!)
-          .toList();
-
-      final deviation = await _directionsService.calculateTotalDeviation(
-        origin: _currentTrip!.origin,
-        destination: _currentTrip!.destination,
-        acceptedPickups: acceptedPickups,
-        newPickup: request.pickupPoint,
+      final route = await _directionsService.getRoute(
+        originLat: driverLat,
+        originLng: driverLng,
+        destLat: request.pickupPoint.latitude,
+        destLng: request.pickupPoint.longitude,
       );
+
+      print('[ETA-DEBUG] resultado: ${route?.durationMinutes} min');
 
       if (mounted) {
         setState(() {
-          _deviationsCache[request.requestId] = deviation?.deviationMinutes;
+          _etaCache[request.requestId] = route?.durationMinutes;
         });
       }
     } catch (e) {
+      print('[ETA-DEBUG] error: $e');
       if (mounted) {
         setState(() {
-          _deviationsCache[request.requestId] = null;
+          _etaCache[request.requestId] = null;
         });
       }
     }
@@ -1661,9 +1989,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     try {
       final user = await _firestoreService.getUser(passengerId);
       _usersCache[passengerId] = user;
+      if (mounted) setState(() {}); // Actualizar cards con nombre real
       return user;
     } catch (e) {
-      _usersCache[passengerId] = null;
+      // No cachear en error — permite reintento en el siguiente stream event
       return null;
     }
   }
@@ -1705,14 +2034,22 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
   @override
   void dispose() {
+    NotificationService().unsuppressType('new_ride_request');
+    _openChatSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _positionStream?.cancel();
     _compassSubscription?.cancel();
     _waitTimer?.cancel();
+    // Cancelar todos los streams de chat
+    for (final sub in _chatSubs.values) {
+      sub.cancel();
+    }
+    _chatSubs.clear();
     _pulseController.dispose();
     _requestSlideController.dispose();
     _mapController?.dispose();
-    _ttsService.stop();
+    // NO llamar _ttsService.stop() — es singleton, puede seguir hablando
+    // al navegar a otra pantalla (ej: "Viaje finalizado")
     _taximeterService.dispose();
     super.dispose();
   }
@@ -1739,10 +2076,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                 backgroundColor: AppColors.success,
               ),
             );
-            _ttsService.stop();
+            // NO llamar _ttsService.stop() — TTS ya terminó en _finalizeTrip
             _navigateToHome();
           } else if (state is TripCancelled) {
-            _ttsService.stop();
+            // NO llamar _ttsService.stop() — es singleton, no interrumpir
             _navigateToHome();
           }
         },
@@ -1772,6 +2109,9 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
                 _updateTripMarkers(trip);
+
+                // Sincronizar streams de chat para pasajeros aceptados
+                _syncChatStreams(trip);
 
                 // Restaurar taxímetros de pasajeros picked_up si la sesión local se perdió
                 _restoreTaximetersIfNeeded(trip);
@@ -1806,20 +2146,14 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                   if (!_isPausedForPickup)
                     _buildRequestsOverlay(trip),
 
-                  // Timer de espera (si está esperando)
-                  if (_isWaitingAtPickup)
-                    _buildWaitingOverlay(),
+                  // Botones de acción (abajo del todo) — ocultos durante espera en pickup
+                  if (!_isWaitingAtPickup)
+                    _buildActionButtons(trip),
 
-                  // Botones de acción (abajo del todo)
-                  _buildActionButtons(trip),
-
-                  // Chip "No más solicitudes" (arriba)
-                  _buildStopAcceptingChip(trip),
-
-                  // Taxímetro flotante (encima del botón finalizar)
-                  if (_activeMeterSessions.isNotEmpty)
+                  // Taxímetro flotante (encima de los botones de acción)
+                  if (_activeMeterSessions.isNotEmpty && !_isWaitingAtPickup)
                     Positioned(
-                      bottom: 110,
+                      bottom: _calculateTaximeterBottom(trip),
                       left: 0,
                       right: 0,
                       child: TaximeterWidget(
@@ -1831,6 +2165,10 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                         onDropOff: _handlePassengerDropOff,
                       ),
                     ),
+
+                  // Bottom sheet de espera deslizable (no bloquea solicitudes ni taxímetro)
+                  if (_isWaitingAtPickup)
+                    _buildWaitingBottomSheet(),
                 ],
               );
             },
@@ -2119,87 +2457,121 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         ? '${_distanceToNextStep.round()} m'
         : '${(_distanceToNextStep / 1000).toStringAsFixed(1)} km';
 
+    // Verificar si hay un paso siguiente para el preview
+    final hasNextStep = _currentStepIndex + 1 < _currentRoute!.steps.length;
+    final nextStep = hasNextStep ? _currentRoute!.steps[_currentStepIndex + 1] : null;
+
     return Positioned(
       top: MediaQuery.of(context).padding.top + 145,
       left: 16,
       right: 16,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          color: AppColors.primary,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.primary.withOpacity(0.3),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            // Icono de maniobra
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(10),
+      child: Column(
+        children: [
+          // Paso actual
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: AppColors.primary,
+              borderRadius: BorderRadius.vertical(
+                top: const Radius.circular(14),
+                bottom: Radius.circular(hasNextStep ? 0 : 14),
               ),
-              child: Icon(
-                _getManeuverIcon(step.maneuver),
-                color: Colors.white,
-                size: 28,
-              ),
+              boxShadow: hasNextStep ? [] : [
+                BoxShadow(
+                  color: AppColors.primary.withOpacity(0.3),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
-            const SizedBox(width: 12),
-
-            // Instrucción
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    step.instruction,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+            child: Row(
+              children: [
+                // Icono de maniobra
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    distText,
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.8),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
+                  child: Icon(
+                    _getManeuverIcon(step.maneuver),
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                ),
+                const SizedBox(width: 12),
+
+                // Instrucción + distancia
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        step.instruction,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        distText,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.8),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Preview del siguiente paso
+          if (hasNextStep)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.75),
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(14)),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withOpacity(0.3),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _getManeuverIcon(nextStep!.maneuver),
+                    color: Colors.white.withOpacity(0.7),
+                    size: 18,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Luego: ${nextStep.instruction}',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.7),
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
               ),
             ),
-
-            // Indicador de step
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                '${_currentStepIndex + 1}/${_currentRoute!.steps.length}',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.9),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -2219,7 +2591,6 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
         stream: _requestsStream ??= _requestsService.getMatchingRequestsStream(
           driverOrigin: trip.origin,
           driverDestination: trip.destination,
-          radiusKm: 5.0,
         ),
         builder: (context, snapshot) {
           final requests = snapshot.data ?? [];
@@ -2229,23 +2600,44 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
             return const SizedBox.shrink();
           }
 
+          // Pre-fetch info de usuarios para que el nombre esté listo al renderizar
+          for (final request in requests) {
+            if (!_usersCache.containsKey(request.passengerId)) {
+              _getUserInfo(request.passengerId);
+            }
+          }
+
           // Anunciar solicitudes nuevas por TTS
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) _announceNewRequests(requests);
           });
 
-          final displayRequests = requests.take(2).toList();
-
-          // Calcular desvíos fuera del build
-          for (final request in displayRequests) {
+          // Calcular ETA para hasta 10 solicitudes (no solo las 2 mostradas)
+          final requestsNeedingEta = requests
+              .where((r) => !_etaCache.containsKey(r.requestId))
+              .take(10);
+          for (final request in requestsNeedingEta) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) _calculateDeviation(request);
+              if (mounted) _calculateEta(request);
             });
           }
 
+          // Ordenar por ETA (más cercano primero, sin ETA al final)
+          final sortedRequests = List<RideRequestModel>.from(requests);
+          sortedRequests.sort((a, b) {
+            final etaA = _etaCache[a.requestId];
+            final etaB = _etaCache[b.requestId];
+            if (etaA != null && etaB != null) return etaA.compareTo(etaB);
+            if (etaA != null) return -1;
+            if (etaB != null) return 1;
+            return a.requestedAt.compareTo(b.requestedAt);
+          });
+
+          final displayRequests = sortedRequests.take(2).toList();
+
           return Column(
             children: [
-              if (requests.length > 2)
+              if (sortedRequests.length > 2)
                 Container(
                   margin: const EdgeInsets.only(bottom: 8),
                   padding: const EdgeInsets.symmetric(
@@ -2257,7 +2649,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    '+${requests.length - 2} solicitudes más',
+                    '+${sortedRequests.length - 2} solicitudes más',
                     style: const TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.w600,
@@ -2276,135 +2668,169 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   }
 
   Widget _buildRequestCard(RideRequestModel request, TripModel trip) {
-    final deviation = _deviationsCache[request.requestId];
+    final eta = _etaCache[request.requestId];
+    final user = _usersCache[request.passengerId];
 
-    return FutureBuilder<UserModel?>(
-      future: _getUserInfo(request.passengerId),
-      builder: (context, userSnapshot) {
-        final user = userSnapshot.data;
+    // Disparar fetch si aún no está en cache (se actualizará con setState)
+    if (!_usersCache.containsKey(request.passengerId)) {
+      _getUserInfo(request.passengerId);
+    }
 
-        return Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.15),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(12),
-              onTap: () {
-                context.push(
-                  '/driver/passenger-request/${widget.tripId}/${request.requestId}',
-                );
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    // Avatar
-                    CircleAvatar(
-                      radius: 24,
-                      backgroundColor: AppColors.primary.withOpacity(0.1),
-                      backgroundImage: user?.profilePhotoUrl != null
-                          ? NetworkImage(user!.profilePhotoUrl!)
-                          : null,
-                      child: user?.profilePhotoUrl == null
-                          ? const Icon(Icons.person, color: AppColors.primary)
-                          : null,
-                    ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () {
+            context.push(
+              '/driver/passenger-request/${widget.tripId}/${request.requestId}',
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                // Avatar
+                CircleAvatar(
+                  radius: 24,
+                  backgroundColor: AppColors.primary.withOpacity(0.1),
+                  backgroundImage: user?.profilePhotoUrl != null
+                      ? NetworkImage(user!.profilePhotoUrl!)
+                      : null,
+                  child: user?.profilePhotoUrl == null
+                      ? const Icon(Icons.person, color: AppColors.primary)
+                      : null,
+                ),
 
-                    const SizedBox(width: 12),
+                const SizedBox(width: 12),
 
-                    // Info
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                // Info
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        user?.firstName ?? 'Pasajero',
+                        style: AppTextStyles.body2.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        request.pickupPoint.name,
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      // Método de pago
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            user?.firstName ?? 'Pasajero',
-                            style: AppTextStyles.body2.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                          Icon(
+                            request.paymentMethod == 'Transferencia'
+                                ? Icons.account_balance_outlined
+                                : Icons.payments_outlined,
+                            size: 12,
+                            color: AppColors.textSecondary,
                           ),
-                          const SizedBox(height: 2),
+                          const SizedBox(width: 4),
                           Text(
-                            request.pickupPoint.name,
+                            request.paymentMethod,
                             style: AppTextStyles.caption.copyWith(
                               color: AppColors.textSecondary,
+                              fontSize: 11,
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
                           ),
                         ],
                       ),
-                    ),
+                    ],
+                  ),
+                ),
 
-                    // Desvío y precio
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        if (deviation != null)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
+                // ETA y taxímetro
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    if (eta != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: eta <= 5
+                              ? AppColors.success.withOpacity(0.1)
+                              : AppColors.warning.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.access_time,
+                              size: 12,
+                              color: eta <= 5
+                                  ? AppColors.success
+                                  : AppColors.warning,
                             ),
-                            decoration: BoxDecoration(
-                              color: deviation <= 5
-                                  ? AppColors.success.withOpacity(0.1)
-                                  : AppColors.warning.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              '+$deviation min',
+                            const SizedBox(width: 3),
+                            Text(
+                              '$eta min',
                               style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w600,
-                                color: deviation <= 5
+                                color: eta <= 5
                                     ? AppColors.success
                                     : AppColors.warning,
                               ),
                             ),
-                          ),
-                        const SizedBox(height: 4),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.speed_rounded, size: 14, color: AppColors.primary),
-                            const SizedBox(width: 4),
-                            Text(
-                              'Taxímetro',
-                              style: AppTextStyles.body2.copyWith(
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.primary,
-                              ),
-                            ),
                           ],
+                        ),
+                      ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.speed_rounded, size: 14, color: AppColors.primary),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Taxímetro',
+                          style: AppTextStyles.body2.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.primary,
+                          ),
                         ),
                       ],
                     ),
-
-                    const SizedBox(width: 8),
-
-                    const Icon(
-                      Icons.chevron_right,
-                      color: AppColors.textSecondary,
-                    ),
                   ],
                 ),
-              ),
+
+                const SizedBox(width: 8),
+
+                const Icon(
+                  Icons.chevron_right,
+                  color: AppColors.textSecondary,
+                ),
+              ],
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -2412,153 +2838,340 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // OVERLAY DE ESPERA
   // ============================================================
 
-  Widget _buildWaitingOverlay() {
+  /// Bottom sheet de espera en punto de recogida.
+  /// Positioned(bottom:0) con AnimatedSize para expandir cuando expira el timer.
+  Widget _buildWaitingBottomSheet() {
     final minutes = _waitSecondsRemaining ~/ 60;
     final seconds = _waitSecondsRemaining % 60;
+    final pickupName =
+        _waitingForPassenger?.pickupPoint?.name ?? 'Punto de recogida';
+    final passengerName = _waitingForPassenger != null
+        ? (_passengerNames[_waitingForPassenger!.userId] ?? 'Pasajero')
+        : 'Pasajero';
 
-    return Positioned.fill(
-      child: Container(
-        color: Colors.black.withOpacity(0.7),
-        child: Center(
-          child: Container(
-            margin: const EdgeInsets.all(32),
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-            ),
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    return Positioned(
+      bottom: 0,
+      left: 0,
+      right: 0,
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+        alignment: Alignment.bottomCenter,
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(20)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 16,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + bottomPadding),
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: [
-                // Icono animado
-                AnimatedBuilder(
-                  animation: _pulseAnimation,
-                  builder: (context, child) {
-                    return Transform.scale(
-                      scale: _pulseAnimation.value,
-                      child: Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          color: AppColors.warning.withOpacity(0.2),
-                          shape: BoxShape.circle,
+                children: [
+                  // Handle decorativo
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+
+                  // === Encabezado: icono + título ===
+                  Row(
+                    children: [
+                      AnimatedBuilder(
+                        animation: _pulseAnimation,
+                        builder: (context, child) {
+                          return Transform.scale(
+                            scale: _pulseAnimation.value,
+                            child: Container(
+                              width: 44,
+                              height: 44,
+                              decoration: BoxDecoration(
+                                color: _waitTimerExpired
+                                    ? AppColors.error.withOpacity(0.15)
+                                    : AppColors.warning.withOpacity(0.2),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                _waitTimerExpired
+                                    ? Icons.timer_off
+                                    : Icons.hourglass_top,
+                                size: 22,
+                                color: _waitTimerExpired
+                                    ? AppColors.error
+                                    : AppColors.warning,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _waitTimerExpired
+                                  ? 'Se acabó el tiempo'
+                                  : 'Esperando a $passengerName',
+                              style: AppTextStyles.h3.copyWith(fontSize: 16),
+                            ),
+                            const SizedBox(height: 2),
+                            Row(
+                              children: [
+                                Icon(Icons.location_on,
+                                    size: 14,
+                                    color: AppColors.textSecondary),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    pickupName,
+                                    style: AppTextStyles.caption.copyWith(
+                                      color: AppColors.textSecondary,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                    maxLines: 1,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                        child: const Icon(
-                          Icons.hourglass_top,
-                          size: 40,
-                          color: AppColors.warning,
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // === Timer grande ===
+                  Text(
+                    '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
+                    style: AppTextStyles.h1.copyWith(
+                      fontSize: 42,
+                      fontWeight: FontWeight.w700,
+                      color: _waitTimerExpired
+                          ? AppColors.error
+                          : _waitSecondsRemaining < 60
+                              ? AppColors.error
+                              : AppColors.textPrimary,
+                    ),
+                  ),
+
+                  const SizedBox(height: 4),
+
+                  Text(
+                    _waitTimerExpired
+                        ? 'Puedes dar tiempo de gracia'
+                        : 'Tiempo restante de espera',
+                    style: AppTextStyles.caption.copyWith(
+                      color: _waitTimerExpired
+                          ? AppColors.error
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+
+                  // === Botones de gracia (solo cuando expiró) ===
+                  if (_waitTimerExpired) ...[
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => _restartTimerWithGrace(1),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.primary,
+                              side: const BorderSide(color: AppColors.primary),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text('+1 min'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => _restartTimerWithGrace(2),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.primary,
+                              side: const BorderSide(color: AppColors.primary),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text('+2 min'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => _restartTimerWithGrace(3),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.primary,
+                              side: const BorderSide(color: AppColors.primary),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text('+3 min'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+
+                  const SizedBox(height: 16),
+
+                  // === Botón de chat con badge de unread ===
+                  Builder(builder: (context) {
+                    final waitUnread = _waitingForPassenger != null
+                        ? (_unreadCounts[_waitingForPassenger!.userId] ?? 0)
+                        : 0;
+                    return SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          if (_waitingForPassenger != null) {
+                            final passengerId = _waitingForPassenger!.userId;
+                            final name =
+                                _passengerNames[passengerId] ?? 'Pasajero';
+                            _markChatAsRead(passengerId);
+                            ChatBottomSheet.show(
+                              context,
+                              tripId: widget.tripId,
+                              passengerId: passengerId,
+                              currentUserId: _currentTrip?.driverId ?? '',
+                              currentUserRole: 'conductor',
+                              isActive: true,
+                              otherUserName: name,
+                            );
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.chat_bubble_outline, size: 16),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Mensaje a $passengerName',
+                              style: const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                            if (waitUnread > 0) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.error,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  '$waitUnread',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
                     );
-                  },
-                ),
+                  }),
 
-                const SizedBox(height: 20),
+                  const SizedBox(height: 12),
 
-                Text(
-                  'Esperando pasajero',
-                  style: AppTextStyles.h3,
-                ),
-
-                const SizedBox(height: 8),
-
-                Text(
-                  _waitingForPassenger?.pickupPoint?.name ?? 'Punto de recogida',
-                  style: AppTextStyles.body2.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-
-                const SizedBox(height: 24),
-
-                // Timer
-                Text(
-                  '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}',
-                  style: AppTextStyles.h1.copyWith(
-                    fontSize: 48,
-                    fontWeight: FontWeight.w700,
-                    color: _waitSecondsRemaining < 60
-                        ? AppColors.error
-                        : AppColors.textPrimary,
-                  ),
-                ),
-
-                const SizedBox(height: 8),
-
-                Text(
-                  'Tiempo restante de espera',
-                  style: AppTextStyles.caption,
-                ),
-
-                const SizedBox(height: 24),
-
-                // Botón de chat
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      if (_waitingForPassenger != null) {
-                        final passengerId = _waitingForPassenger!.userId;
-                        final passengerName = _passengerNames[passengerId] ?? 'Pasajero';
-                        ChatBottomSheet.show(
-                          context,
-                          tripId: widget.tripId,
-                          passengerId: passengerId,
-                          currentUserId: _currentTrip?.driverId ?? '',
-                          currentUserRole: 'conductor',
-                          isActive: true,
-                          otherUserName: passengerName,
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.chat_bubble_outline, size: 16),
-                    label: const Text('Mensaje al pasajero'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.primary,
-                      side: const BorderSide(color: AppColors.primary),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 12),
-
-                // Botones de acción
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: _handlePassengerNoShow,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.error,
-                          side: const BorderSide(color: AppColors.error),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                  // === Botones de acción ===
+                  if (_waitTimerExpired)
+                    // Timer expirado: No llegó + Ya subió
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: _handlePassengerNoShow,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.error,
+                              foregroundColor: Colors.white,
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text('No llegó'),
+                          ),
                         ),
-                        child: const Text('No llegó'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: _handlePassengerPickedUp,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.success,
+                              foregroundColor: Colors.white,
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text('Ya subió'),
+                          ),
+                        ),
+                      ],
+                    )
+                  else
+                    // Timer activo: solo Ya subió
+                    SizedBox(
+                      width: double.infinity,
                       child: ElevatedButton(
                         onPressed: _handlePassengerPickedUp,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.success,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                         ),
                         child: const Text('Ya subió'),
                       ),
                     ),
-                  ],
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
-      ),
     );
   }
 
@@ -2566,77 +3179,1343 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // BOTONES DE ACCIÓN
   // ============================================================
 
-  /// Chip superior "No recibir más pasajeros" (se muestra arriba del mapa)
-  Widget _buildStopAcceptingChip(TripModel trip) {
-    final bool isFull = trip.availableSeats <= 0;
-    if (_stoppedAccepting || isFull) return const SizedBox.shrink();
-
-    return Positioned(
-      top: 100,
-      left: 16,
-      right: 16,
-      child: Center(
-        child: GestureDetector(
-          onTap: () {
-            setState(() => _stoppedAccepting = true);
-            _ttsService.speakAnnouncement('No se recibirán más pasajeros');
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.black87,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
+  /// Popup de confirmación para dejar de recibir pasajeros
+  void _confirmStopAccepting() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿No recibir más pasajeros?'),
+        content: const Text(
+          'No recibirás nuevas solicitudes de pasajeros durante este viaje.',
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Cancelar'),
                 ),
-              ],
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.block, size: 16, color: Colors.white70),
-                const SizedBox(width: 8),
-                Text(
-                  'No recibir más pasajeros',
-                  style: AppTextStyles.body2.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w500,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() => _stoppedAccepting = true);
+                    _ttsService.speakAnnouncement('No se recibirán más pasajeros');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text(
+                    'Confirmar',
+                    style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // TAXIMETER POSITIONING
+  // ============================================================
+
+  /// Calcula el bottom offset del taxímetro según el tamaño del panel inferior.
+  double _calculateTaximeterBottom(TripModel trip) {
+    final acceptedPassengers = trip.passengers
+        .where((p) => p.status == 'accepted' && p.userId.isNotEmpty)
+        .toList();
+    final hasAccepted = acceptedPassengers.isNotEmpty;
+    final hasMultiple = acceptedPassengers.length > 1;
+    final showStopButton = !_stoppedAccepting && trip.availableSeats > 0;
+
+    // Panel: padding(14+16=30) + finalizar(48) + SafeArea bottom(~24) = 102 base
+    double base = 102;
+    if (hasAccepted) {
+      if (hasMultiple) {
+        // Tabs Chrome: barra tabs(40) + contenido(42) + spacing(12) = 94
+        base += 106;
+      } else {
+        // Un solo pasajero: botón único(40) + spacing(12) = 52
+        base += 60;
+      }
+    }
+    if (showStopButton) base += 52; // stop button + spacing
+    return base + 12; // margen extra
+  }
+
+  // ============================================================
+  // CHAT UNREAD TRACKING
+  // ============================================================
+
+  /// Sincroniza streams de chat para pasajeros aceptados.
+  /// Se llama desde el build (addPostFrameCallback) cuando cambian los pasajeros.
+  void _syncChatStreams(TripModel trip) {
+    final acceptedPassengers = trip.passengers
+        .where((p) => p.status == 'accepted')
+        .toList();
+    final acceptedIds = acceptedPassengers.map((p) => p.userId).toSet();
+
+    // Cancelar streams de pasajeros que ya no son "accepted" (ya abordaron o cancelaron)
+    final toRemove = _chatSubs.keys.where((id) => !acceptedIds.contains(id)).toList();
+    for (final id in toRemove) {
+      _chatSubs[id]?.cancel();
+      _chatSubs.remove(id);
+      _unreadCounts.remove(id);
+      _lastSeenCounts.remove(id);
+    }
+
+    // Si el tab seleccionado ya no existe, seleccionar otro
+    if (_selectedChatPassengerId != null &&
+        !acceptedIds.contains(_selectedChatPassengerId)) {
+      _selectedChatPassengerId = acceptedIds.isNotEmpty ? acceptedIds.first : null;
+    }
+
+    // Crear streams para nuevos pasajeros "accepted"
+    for (final passenger in acceptedPassengers) {
+      if (_chatSubs.containsKey(passenger.userId)) continue;
+
+      _lastSeenCounts[passenger.userId] = 0;
+      _unreadCounts[passenger.userId] = 0;
+
+      // Pre-cargar nombre del pasajero si no está en caché
+      if (!_passengerNames.containsKey(passenger.userId)) {
+        final cached = _usersCache[passenger.userId];
+        if (cached != null) {
+          _passengerNames[passenger.userId] = cached.firstName;
+        } else {
+          _getUserInfo(passenger.userId).then((user) {
+            if (user != null && mounted) {
+              setState(() => _passengerNames[passenger.userId] = user.firstName);
+            }
+          });
+        }
+      }
+
+      _chatSubs[passenger.userId] = _chatService
+          .getMessagesStream(widget.tripId, passenger.userId)
+          .listen((messages) {
+        if (!mounted) return;
+        final passengerMsgs =
+            messages.where((m) => m.senderRole == 'pasajero').length;
+        final lastSeen = _lastSeenCounts[passenger.userId] ?? 0;
+        final unread = (passengerMsgs - lastSeen).clamp(0, 99);
+        if (unread != (_unreadCounts[passenger.userId] ?? 0)) {
+          setState(() {
+            _unreadCounts[passenger.userId] = unread;
+          });
+        }
+      });
+
+      // Auto-seleccionar primer tab si no hay ninguno seleccionado
+      _selectedChatPassengerId ??= passenger.userId;
+    }
+  }
+
+  /// Marca los mensajes del pasajero como leídos (al abrir el chat).
+  void _markChatAsRead(String passengerId) {
+    final current = (_lastSeenCounts[passengerId] ?? 0) +
+        (_unreadCounts[passengerId] ?? 0);
+    _lastSeenCounts[passengerId] = current;
+    setState(() {
+      _unreadCounts[passengerId] = 0;
+    });
+  }
+
+  /// Total de mensajes no leídos de todos los pasajeros.
+  int get _totalUnread =>
+      _unreadCounts.values.fold(0, (sum, count) => sum + count);
+
+  // ============================================================
+  // BOTTOM PANEL (REDISEÑADO)
+  // ============================================================
+
+  Widget _buildActionButtons(TripModel trip) {
+    final bool isFull = trip.availableSeats <= 0;
+    final bool showStopButton = !_stoppedAccepting && !isFull;
+
+    // Pasajeros con status "accepted" (en camino a recoger → chat activo)
+    final acceptedPassengers = trip.passengers
+        .where((p) => p.status == 'accepted' && p.userId.isNotEmpty)
+        .toList();
+    final hasAccepted = acceptedPassengers.isNotEmpty;
+
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    return Positioned(
+      bottom: 0,
+      left: 0,
+      right: 0,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 12,
+              offset: const Offset(0, -2),
+            ),
+          ],
+        ),
+        padding: EdgeInsets.fromLTRB(16, 14, 16, 16 + bottomPadding),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // === Tabs de chat estilo Chrome con pasajeros aceptados ===
+            if (hasAccepted) ...[
+              _buildChatTabs(acceptedPassengers),
+              const SizedBox(height: 12),
+            ],
+
+            // === Botón "Finalizar viaje" ===
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _completeTrip,
+                icon: const Icon(Icons.flag, size: 20),
+                label: const Text(
+                  'Finalizar viaje',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.success,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  elevation: 0,
+                ),
+              ),
+            ),
+
+            // === Botón "No recibir más pasajeros" ===
+            if (showStopButton) ...[
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _confirmStopAccepting,
+                  icon: Icon(Icons.block, size: 16, color: AppColors.textSecondary),
+                  label: Text(
+                    'No recibir más pasajeros',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    side: BorderSide(color: AppColors.divider),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildActionButtons(TripModel trip) {
-    return Positioned(
-      bottom: 24,
-      left: 16,
-      right: 16,
-      child: SafeArea(
-        child: SizedBox(
+  /// Ordena pasajeros aceptados por proximidad al conductor (más cercano primero).
+  List<TripPassenger> _sortByProximity(List<TripPassenger> passengers) {
+    if (_currentPosition == null) return passengers;
+    final driverLat = _currentPosition!.latitude;
+    final driverLng = _currentPosition!.longitude;
+
+    final sorted = List<TripPassenger>.from(passengers);
+    sorted.sort((a, b) {
+      final distA = a.pickupPoint != null
+          ? Geolocator.distanceBetween(
+              driverLat, driverLng,
+              a.pickupPoint!.latitude, a.pickupPoint!.longitude)
+          : double.maxFinite;
+      final distB = b.pickupPoint != null
+          ? Geolocator.distanceBetween(
+              driverLat, driverLng,
+              b.pickupPoint!.latitude, b.pickupPoint!.longitude)
+          : double.maxFinite;
+      return distA.compareTo(distB);
+    });
+    return sorted;
+  }
+
+  /// Tabs estilo navegador Chrome para chat con pasajeros aceptados.
+  /// Ordenados por proximidad al conductor (más cercano → primera tab).
+  /// Cuando el pasajero aborda ("Ya subió"), su tab desaparece automáticamente.
+  Widget _buildChatTabs(List<TripPassenger> acceptedPassengers) {
+    final sorted = _sortByProximity(acceptedPassengers);
+
+    // Si solo hay 1 pasajero → tab única con nombre completo + botón enviar
+    if (sorted.length == 1) {
+      final p = sorted.first;
+      final name = _passengerNames[p.userId] ?? 'Pasajero';
+      final unread = _unreadCounts[p.userId] ?? 0;
+
+      return GestureDetector(
+        onTap: () {
+          _markChatAsRead(p.userId);
+          ChatBottomSheet.show(
+            context,
+            tripId: widget.tripId,
+            passengerId: p.userId,
+            currentUserId: _currentTrip?.driverId ?? '',
+            currentUserRole: 'conductor',
+            isActive: true,
+            otherUserName: name,
+          );
+        },
+        child: Container(
           width: double.infinity,
-          child: ElevatedButton.icon(
-            onPressed: _completeTrip,
-            icon: const Icon(Icons.flag),
-            label: const Text('Finalizar viaje'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.success,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppColors.primary,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.chat_bubble_outline, size: 17, color: Colors.white),
+              const SizedBox(width: 8),
+              Text(
+                'Mensaje a $name',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-              elevation: 4,
+              if (unread > 0) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.error,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$unread',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Múltiples pasajeros → tabs estilo Chrome
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // === Barra de tabs ===
+        Container(
+          height: 40,
+          decoration: BoxDecoration(
+            color: Colors.grey.shade200,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+          ),
+          child: Row(
+            children: sorted.map((p) {
+              final isSelected = _selectedChatPassengerId == p.userId;
+              final name = _passengerNames[p.userId] ?? 'Pasajero';
+              final unread = _unreadCounts[p.userId] ?? 0;
+              final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+
+              return Expanded(
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() => _selectedChatPassengerId = p.userId);
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    decoration: BoxDecoration(
+                      color: isSelected ? Colors.white : Colors.transparent,
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(12),
+                      ),
+                      // Borde sutil para separar tabs
+                      border: isSelected
+                          ? Border(
+                              bottom: BorderSide(
+                                color: AppColors.primary,
+                                width: 2.5,
+                              ),
+                            )
+                          : null,
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // Círculo con inicial
+                        Container(
+                          width: 22,
+                          height: 22,
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? AppColors.primary
+                                : Colors.grey.shade400,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Center(
+                            child: Text(
+                              initial,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        // Nombre truncado
+                        Flexible(
+                          child: Text(
+                            name,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: isSelected
+                                  ? FontWeight.w600
+                                  : FontWeight.w400,
+                              color: isSelected
+                                  ? AppColors.textPrimary
+                                  : AppColors.textSecondary,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                        ),
+                        // Badge de unread
+                        if (unread > 0) ...[
+                          const SizedBox(width: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.error,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              '$unread',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+
+        // === Contenido del tab seleccionado: botón de abrir chat ===
+        Builder(
+          builder: (context) {
+            final selectedId = _selectedChatPassengerId;
+            final selectedPassenger = sorted.firstWhere(
+              (p) => p.userId == selectedId,
+              orElse: () => sorted.first,
+            );
+            final name = _passengerNames[selectedPassenger.userId] ?? 'Pasajero';
+            final pickup = selectedPassenger.pickupPoint?.name ?? 'Punto de recogida';
+
+            return GestureDetector(
+              onTap: () {
+                _markChatAsRead(selectedPassenger.userId);
+                ChatBottomSheet.show(
+                  context,
+                  tripId: widget.tripId,
+                  passengerId: selectedPassenger.userId,
+                  currentUserId: _currentTrip?.driverId ?? '',
+                  currentUserRole: 'conductor',
+                  isActive: true,
+                  otherUserName: name,
+                );
+              },
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(12),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.chat_bubble_outline, size: 17, color: Colors.white),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Mensaje a $name',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            pickup,
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.75),
+                              fontSize: 11,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(Icons.arrow_forward_ios, size: 14, color: Colors.white70),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// WIDGET: Bottom Sheet de pago con tabs por pasajero
+// ============================================================
+
+class _PaymentTabsSheet extends StatefulWidget {
+  final List<TripPassenger> passengers;
+  final Map<String, TaximeterSession> sessions;
+  final Map<String, String> passengerNames;
+  final String tripId;
+  final TripsService tripsService;
+  final FirestoreService firestoreService;
+
+  const _PaymentTabsSheet({
+    required this.passengers,
+    required this.sessions,
+    required this.passengerNames,
+    required this.tripId,
+    required this.tripsService,
+    required this.firestoreService,
+  });
+
+  @override
+  State<_PaymentTabsSheet> createState() => _PaymentTabsSheetState();
+}
+
+class _PaymentTabsSheetState extends State<_PaymentTabsSheet> {
+  // Estado de pago por pasajero: null = pendiente, 'paid', 'unpaid'
+  late Map<String, String?> _paymentStatus;
+  late String _selectedPassengerId;
+
+  @override
+  void initState() {
+    super.initState();
+    _paymentStatus = {
+      for (final p in widget.passengers) p.userId: null,
+    };
+    _selectedPassengerId = widget.passengers.first.userId;
+  }
+
+  int get _processedCount =>
+      _paymentStatus.values.where((s) => s != null).length;
+
+  bool get _allProcessed => _processedCount == widget.passengers.length;
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomPadding = MediaQuery.of(context).viewInsets.bottom;
+
+    return Container(
+      margin: EdgeInsets.only(top: MediaQuery.of(context).padding.top + 60),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Handle bar
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade300,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+
+          // Título
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+            child: Row(
+              children: [
+                const Icon(Icons.payments_outlined,
+                    color: AppColors.primary, size: 24),
+                const SizedBox(width: 10),
+                Text(
+                  'Confirmar pagos',
+                  style: AppTextStyles.h3.copyWith(fontWeight: FontWeight.w700),
+                ),
+                const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _allProcessed
+                        ? AppColors.success.withValues(alpha: 0.12)
+                        : AppColors.tertiary,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '$_processedCount/${widget.passengers.length}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color:
+                          _allProcessed ? AppColors.success : AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Tabs (solo si hay más de 1 pasajero)
+          if (widget.passengers.length > 1) _buildTabs(),
+
+          // Contenido del pasajero seleccionado
+          Flexible(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.only(bottom: bottomPadding + 20),
+              child: _buildPassengerContent(_selectedPassengerId),
+            ),
+          ),
+
+          // Botón continuar
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: _allProcessed
+                      ? () {
+                          // Retornar resultados de pago
+                          Navigator.of(context).pop(
+                            Map<String, String>.from(
+                              _paymentStatus
+                                  .map((k, v) => MapEntry(k, v ?? 'pending')),
+                            ),
+                          );
+                        }
+                      : null,
+                  icon: const Icon(Icons.check_circle, size: 20),
+                  label: Text(
+                    _allProcessed
+                        ? 'Continuar a calificaciones'
+                        : 'Procesa todos los pagos ($_processedCount/${widget.passengers.length})',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.success,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade200,
+                    disabledForegroundColor: Colors.grey.shade500,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabs() {
+    return Container(
+      height: 44,
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: widget.passengers.map((p) {
+          final isSelected = _selectedPassengerId == p.userId;
+          final name = widget.passengerNames[p.userId] ?? 'Pasajero';
+          final status = _paymentStatus[p.userId];
+          final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+
+          // Colores según estado
+          Color tabBg;
+          Color? borderColor;
+          if (isSelected) {
+            tabBg = Colors.white;
+            borderColor = status == 'paid'
+                ? AppColors.success
+                : status == 'unpaid'
+                    ? AppColors.error
+                    : AppColors.primary;
+          } else {
+            tabBg = status == 'paid'
+                ? AppColors.success.withValues(alpha: 0.08)
+                : status == 'unpaid'
+                    ? AppColors.error.withValues(alpha: 0.08)
+                    : Colors.transparent;
+            borderColor = null;
+          }
+
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _selectedPassengerId = p.userId),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                margin: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
+                  color: tabBg,
+                  borderRadius: BorderRadius.circular(10),
+                  border: borderColor != null
+                      ? Border.all(color: borderColor, width: 1.5)
+                      : null,
+                  boxShadow: isSelected
+                      ? [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.06),
+                            blurRadius: 4,
+                            offset: const Offset(0, 1),
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    // Icono de estado o inicial
+                    if (status == 'paid')
+                      const Icon(Icons.check_circle,
+                          size: 16, color: AppColors.success)
+                    else if (status == 'unpaid')
+                      const Icon(Icons.cancel, size: 16, color: AppColors.error)
+                    else
+                      Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? AppColors.primary
+                              : Colors.grey.shade400,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Center(
+                          child: Text(
+                            initial,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(width: 5),
+                    Flexible(
+                      child: Text(
+                        name.split(' ').first,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight:
+                              isSelected ? FontWeight.w600 : FontWeight.w400,
+                          color: isSelected
+                              ? AppColors.textPrimary
+                              : AppColors.textSecondary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildPassengerContent(String passengerId) {
+    final passenger = widget.passengers.firstWhere(
+      (p) => p.userId == passengerId,
+      orElse: () => widget.passengers.first,
+    );
+    final session = widget.sessions[passengerId];
+    final name = widget.passengerNames[passengerId] ?? 'Pasajero';
+    final status = _paymentStatus[passengerId];
+    final isProcessed = status != null;
+
+    if (session == null) {
+      return Padding(
+        padding: const EdgeInsets.all(40),
+        child: Center(
+          child: Text(
+            'Sin datos de taxímetro para $name',
+            style:
+                AppTextStyles.body2.copyWith(color: AppColors.textSecondary),
+          ),
+        ),
+      );
+    }
+
+    // Calcular desglose de tarifa
+    final isNight = session.isNightTariff;
+    final startFare = isNight
+        ? PricingService.nightStartFare
+        : PricingService.dayStartFare;
+    final perKm =
+        isNight ? PricingService.nightPerKm : PricingService.dayPerKm;
+    final perWaitMin = isNight
+        ? PricingService.nightPerWaitMinute
+        : PricingService.dayPerWaitMinute;
+    final minimumFare = isNight
+        ? PricingService.nightMinimumFare
+        : PricingService.dayMinimumFare;
+
+    final distanceCost = session.totalDistanceKm * perKm;
+    final waitCost = session.totalWaitMinutes * perWaitMin;
+    final rawTotal = startFare + distanceCost + waitCost;
+    final appliedMinimum = rawTotal < minimumFare;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Nombre del pasajero + tarifa badge
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  name,
+                  style:
+                      AppTextStyles.h3.copyWith(fontWeight: FontWeight.w600),
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isNight
+                      ? Colors.indigo.withValues(alpha: 0.1)
+                      : Colors.amber.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isNight
+                          ? Icons.nightlight_round
+                          : Icons.wb_sunny_rounded,
+                      size: 14,
+                      color: isNight ? Colors.indigo : Colors.amber.shade700,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      isNight ? 'Nocturna' : 'Diurna',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color:
+                            isNight ? Colors.indigo : Colors.amber.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // Desglose de tarifa
+          _buildFareRow('Arranque', '\$${startFare.toStringAsFixed(2)}'),
+          _buildFareRow(
+            '${session.totalDistanceKm.toStringAsFixed(1)} km',
+            '\$${distanceCost.toStringAsFixed(2)}',
+          ),
+          if (session.totalWaitMinutes >= 0.5)
+            _buildFareRow(
+              '${session.totalWaitMinutes.round()} min espera',
+              '\$${waitCost.toStringAsFixed(2)}',
+            ),
+          // Descuento grupal
+          if (session.discountPercent > 0) ...[
+            _buildFareRow(
+              'Desc. grupo (${(session.discountPercent * 100).round()}%)',
+              '-\$${(session.fareBeforeDiscount - session.currentFare).toStringAsFixed(2)}',
+              valueColor: AppColors.success,
+            ),
+          ],
+          const Divider(height: 20),
+
+          // Total (con redondeo a $0.05 si es efectivo)
+          Builder(builder: (context) {
+            final isCash = passenger.paymentMethod == 'Efectivo';
+            final displayFare = isCash
+                ? PricingService.roundUpToNickel(session.currentFare)
+                : session.currentFare;
+            final wasRounded = isCash && displayFare != session.currentFare;
+
+            return Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'TOTAL',
+                      style: AppTextStyles.body1
+                          .copyWith(fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      '\$${displayFare.toStringAsFixed(2)}',
+                      style: AppTextStyles.h2.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+                if (appliedMinimum)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '(Tarifa mínima aplicada)',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textTertiary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                if (wasRounded)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '(Redondeado a \$0.05 — efectivo)',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textTertiary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          }),
+          const SizedBox(height: 12),
+
+          // Método de pago
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.tertiary,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  passenger.paymentMethod == 'Efectivo'
+                      ? Icons.payments_outlined
+                      : Icons.account_balance_outlined,
+                  size: 18,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  passenger.paymentMethod,
+                  style: AppTextStyles.body2
+                      .copyWith(fontWeight: FontWeight.w500),
+                ),
+              ],
+            ),
+          ),
+
+          // Info de distancia y tiempo
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Center(
+              child: Text(
+                '${session.totalDistanceKm.toStringAsFixed(1)} km · ${session.elapsedFormatted}',
+                style: AppTextStyles.caption
+                    .copyWith(color: AppColors.textTertiary),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Botones de acción o estado procesado
+          if (isProcessed)
+            _buildProcessedBadge(status!)
+          else
+            _buildActionButtons(passengerId, name, session),
+
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProcessedBadge(String status) {
+    final isPaid = status == 'paid';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      decoration: BoxDecoration(
+        color: isPaid
+            ? AppColors.success.withValues(alpha: 0.1)
+            : AppColors.error.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isPaid
+              ? AppColors.success.withValues(alpha: 0.3)
+              : AppColors.error.withValues(alpha: 0.3),
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            isPaid ? Icons.check_circle : Icons.cancel,
+            color: isPaid ? AppColors.success : AppColors.error,
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            isPaid ? 'Pago confirmado' : 'Reportado como no pagó',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: isPaid ? AppColors.success : AppColors.error,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButtons(
+      String passengerId, String name, TaximeterSession session) {
+    return Row(
+      children: [
+        Expanded(
+          child: ElevatedButton(
+            onPressed: () => _handleUnpaid(passengerId, name, session),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              elevation: 0,
+            ),
+            child: const Text(
+              'No pagó',
+              style: TextStyle(fontWeight: FontWeight.w600),
             ),
           ),
         ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: () {
+              setState(() {
+                _paymentStatus[passengerId] = 'paid';
+                // Auto-avanzar al siguiente pendiente
+                _autoAdvanceToNext();
+              });
+            },
+            icon: const Icon(Icons.payments, size: 18),
+            label: const Text(
+              'Pagó',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              elevation: 0,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Auto-avanzar a la siguiente tab pendiente
+  void _autoAdvanceToNext() {
+    final nextPending = widget.passengers.firstWhere(
+      (p) => _paymentStatus[p.userId] == null,
+      orElse: () => widget.passengers.first,
+    );
+    if (_paymentStatus[nextPending.userId] == null) {
+      _selectedPassengerId = nextPending.userId;
+    }
+  }
+
+  /// Flujo "No pagó" — confirmación + razón + strike
+  Future<void> _handleUnpaid(
+      String passengerId, String name, TaximeterSession session) async {
+    // Step 1: Confirmar
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Estás seguro?'),
+        content: Text(
+          'Reportar que $name no realizó el pago.\n\n'
+          'Esto aplicará un strike a su cuenta.',
+        ),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Cancelar'),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Sí, no pagó'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    // Step 2: Razón
+    final reason = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        final controller = TextEditingController();
+        final formKey = GlobalKey<FormState>();
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Text('Motivo del no pago'),
+            content: Form(
+              key: formKey,
+              child: TextFormField(
+                controller: controller,
+                maxLength: 100,
+                maxLines: 2,
+                decoration: InputDecoration(
+                  hintText: 'Describe brevemente lo que pasó...',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                validator: (v) {
+                  if (v == null || v.trim().length < 10) {
+                    return 'Mínimo 10 caracteres';
+                  }
+                  return null;
+                },
+                onChanged: (_) => setDialogState(() {}),
+              ),
+            ),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+            actionsAlignment: MainAxisAlignment.center,
+            actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+            actions: [
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(ctx, null),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.textSecondary,
+                        side: const BorderSide(color: AppColors.border),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: controller.text.trim().length >= 10
+                          ? () {
+                              if (formKey.currentState?.validate() ?? false) {
+                                Navigator.pop(ctx, controller.text.trim());
+                              }
+                            }
+                          : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.error,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      child: const Text('Reportar'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (reason == null || !mounted) return;
+
+    // Step 3: Aplicar strike + actualizar pago
+    try {
+      await widget.tripsService.updatePassengerPaymentStatus(
+        widget.tripId,
+        passengerId,
+        'unpaid',
+        paymentNote: reason,
+      );
+      final newStrikes =
+          await widget.firestoreService.applyPaymentStrike(passengerId);
+
+      String strikeMsg;
+      if (newStrikes >= 3) {
+        strikeMsg =
+            'La cuenta de $name ha sido bloqueada permanentemente (Strike 3/3).';
+      } else if (newStrikes == 2) {
+        strikeMsg =
+            'Strike $newStrikes/3 aplicado. $name suspendido por 2 semanas.';
+      } else {
+        strikeMsg =
+            'Strike $newStrikes/3 aplicado. $name suspendido por 1 semana.';
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(strikeMsg),
+            backgroundColor: AppColors.error,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error aplicando strike: $e');
+    }
+
+    setState(() {
+      _paymentStatus[passengerId] = 'unpaid';
+      _autoAdvanceToNext();
+    });
+  }
+
+  Widget _buildFareRow(String label, String value, {Color? valueColor}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style:
+                AppTextStyles.body2.copyWith(color: AppColors.textSecondary),
+          ),
+          Text(
+            value,
+            style: AppTextStyles.body2.copyWith(
+              fontWeight: FontWeight.w500,
+              color: valueColor,
+            ),
+          ),
+        ],
       ),
     );
   }

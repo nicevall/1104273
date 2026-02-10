@@ -23,6 +23,11 @@ class RideRequestsService {
   /// Retorna el requestId generado.
   Future<String> createRequest(RideRequestModel request) async {
     try {
+      // Validar que passengerId no esté vacío
+      if (request.passengerId.isEmpty) {
+        throw Exception('passengerId no puede estar vacío');
+      }
+
       // Cancelar solicitudes activas previas del mismo pasajero
       await _cancelPreviousActiveRequests(request.passengerId);
 
@@ -131,10 +136,10 @@ class RideRequestsService {
     double radiusKm = 5.0,
   }) async {
     try {
-      // Query: solicitudes activas (searching) que no hayan expirado
+      // Query: solicitudes activas (searching/reviewing) que no hayan expirado
       final querySnapshot = await _firestore
           .collection(_requestsCollection)
-          .where('status', isEqualTo: 'searching')
+          .where('status', whereIn: ['searching', 'reviewing'])
           .where('expiresAt', isGreaterThan: Timestamp.now())
           .get();
 
@@ -143,15 +148,11 @@ class RideRequestsService {
       for (final doc in querySnapshot.docs) {
         final request = RideRequestModel.fromFirestore(doc);
 
-        // Verificar si el origen del pasajero está cerca de la ruta del conductor
-        final originDistance = _haversineDistance(
-          request.origin.latitude,
-          request.origin.longitude,
-          driverOrigin.latitude,
-          driverOrigin.longitude,
-        );
+        // Ignorar solicitudes con passengerId vacío (datos huérfanos)
+        if (request.passengerId.isEmpty) continue;
 
-        // Verificar si el destino del pasajero está cerca del destino del conductor
+        // Solo filtrar por destino (ambos van al mismo lugar)
+        // Sin filtro de origen — la UI ordena por ETA (más cercano primero)
         final destDistance = _haversineDistance(
           request.destination.latitude,
           request.destination.longitude,
@@ -159,15 +160,12 @@ class RideRequestsService {
           driverDestination.longitude,
         );
 
-        // Ambos deben estar dentro del radio
-        if (originDistance <= radiusKm && destDistance <= radiusKm) {
+        if (destDistance <= radiusKm) {
           results.add(request);
         }
       }
 
-      // Ordenar por hora de solicitud (más recientes primero)
-      results.sort((a, b) => b.requestedAt.compareTo(a.requestedAt));
-
+      // Sin sort aquí — la UI ordena por ETA (tiempo de llegada)
       return results;
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
@@ -190,7 +188,7 @@ class RideRequestsService {
 
       return _firestore
           .collection(_requestsCollection)
-          .where('status', isEqualTo: 'searching')
+          .where('status', whereIn: ['searching', 'reviewing'])
           .where('expiresAt', isGreaterThan: now)
           .snapshots()
           .map((snapshot) {
@@ -199,13 +197,11 @@ class RideRequestsService {
         for (final doc in snapshot.docs) {
           final request = RideRequestModel.fromFirestore(doc);
 
-          final originDistance = _haversineDistance(
-            request.origin.latitude,
-            request.origin.longitude,
-            driverOrigin.latitude,
-            driverOrigin.longitude,
-          );
+          // Ignorar solicitudes con passengerId vacío (datos huérfanos)
+          if (request.passengerId.isEmpty) continue;
 
+          // Solo filtrar por destino (ambos van al mismo lugar)
+          // Sin filtro de origen — la UI ordena por ETA (más cercano primero)
           final destDistance = _haversineDistance(
             request.destination.latitude,
             request.destination.longitude,
@@ -213,16 +209,57 @@ class RideRequestsService {
             driverDestination.longitude,
           );
 
-          if (originDistance <= radiusKm && destDistance <= radiusKm) {
+          if (destDistance <= radiusKm) {
             results.add(request);
           }
         }
 
-        results.sort((a, b) => b.requestedAt.compareTo(a.requestedAt));
+        // Sin sort aquí — la UI ordena por ETA (tiempo de llegada)
         return results;
       });
     } catch (e) {
       throw Exception('Error en stream de solicitudes: $e');
+    }
+  }
+
+  // ==================== Conductor: Revisar solicitud ====================
+
+  /// Marcar solicitud como "en revisión" (conductor abrió la pantalla de detalle)
+  /// Pausa el temporizador del pasajero y muestra mensaje
+  Future<void> reviewRequest(String requestId) async {
+    try {
+      await _firestore
+          .collection(_requestsCollection)
+          .doc(requestId)
+          .update({
+        'status': 'reviewing',
+        'reviewingStartedAt': Timestamp.now(),
+      });
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      throw Exception('Error al marcar solicitud en revisión: $e');
+    }
+  }
+
+  /// Quitar estado de revisión (conductor salió sin aceptar)
+  /// Regresa la solicitud a 'searching' solo si aún está en 'reviewing'
+  Future<void> unreviewRequest(String requestId) async {
+    try {
+      final request = await getRequest(requestId);
+      if (request == null || request.status != 'reviewing') return;
+
+      await _firestore
+          .collection(_requestsCollection)
+          .doc(requestId)
+          .update({
+        'status': 'searching',
+        'reviewingStartedAt': null,
+      });
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      // Silenciar — no bloquear la navegación del conductor
     }
   }
 
@@ -243,7 +280,7 @@ class RideRequestsService {
       if (request == null) {
         throw Exception('Solicitud no encontrada');
       }
-      if (request.status != 'searching') {
+      if (request.status != 'searching' && request.status != 'reviewing') {
         throw Exception('Esta solicitud ya no está disponible');
       }
 

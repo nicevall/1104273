@@ -9,8 +9,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'config/routes/app_router.dart';
+import 'data/services/notification_service.dart';
 import 'core/theme/app_theme.dart';
 import 'data/services/firebase_auth_service.dart';
 import 'data/services/firebase_storage_service.dart';
@@ -61,6 +63,12 @@ void main() async {
   // Usar fuentes Poppins locales (bundled en assets/fonts/)
   // Evita descargar de internet → previene error AssetManifest.json
   GoogleFonts.config.allowRuntimeFetching = false;
+
+  // Registrar handler de mensajes en background (DEBE ser top-level function)
+  FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+
+  // Inicializar servicio de notificaciones push
+  await NotificationService().initialize(appRouter);
 
   runApp(const MyApp());
 }

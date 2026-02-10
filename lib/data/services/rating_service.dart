@@ -57,8 +57,11 @@ class RatingService {
       int count = 0;
 
       for (final doc in ratingsSnapshot.docs) {
-        final stars = doc.data()['stars'] as int?;
-        if (stars != null) {
+        final data = doc.data();
+        final skipped = data['skipped'] as bool? ?? false;
+        if (skipped) continue; // No contar calificaciones omitidas en el promedio
+        final stars = data['stars'] as int?;
+        if (stars != null && stars > 0) {
           totalStars += stars;
           count++;
         }
@@ -79,7 +82,40 @@ class RatingService {
     }
   }
 
-  /// Verificar si ya calificó este viaje
+  /// Registrar que el usuario "omitió" la calificación.
+  /// Escribe un documento con skipped=true para que hasRated() retorne true
+  /// y el usuario no quede atrapado en un loop de reseñas pendientes.
+  /// NO afecta el promedio de rating del usuario calificado.
+  Future<void> submitSkippedRating({
+    required String tripId,
+    required String raterId,
+    required String ratedUserId,
+    required String raterRole,
+  }) async {
+    try {
+      // Verificar que no exista ya un rating para evitar duplicados
+      final existing = await hasRated(tripId, raterId);
+      if (existing) return;
+
+      await _firestore.collection(_ratingsCollection).add({
+        'tripId': tripId,
+        'raterId': raterId,
+        'ratedUserId': ratedUserId,
+        'raterRole': raterRole,
+        'stars': 0,
+        'tags': <String>[],
+        'comment': null,
+        'skipped': true,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      debugPrint('⏭️ Calificación omitida registrada: $raterId → $ratedUserId (trip: $tripId)');
+    } catch (e) {
+      debugPrint('Error al registrar calificación omitida: $e');
+    }
+  }
+
+  /// Verificar si ya calificó este viaje (incluye calificaciones omitidas)
   Future<bool> hasRated(String tripId, String raterId) async {
     try {
       final snap = await _firestore

@@ -135,7 +135,7 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
           onPressed: () => context.pop(),
         ),
         title: Text(
-          'Detalles de Recogida',
+          'Detalles de Solicitud',
           style: AppTextStyles.h3,
         ),
         centerTitle: true,
@@ -295,6 +295,16 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
     );
   }
 
+  // Sugerencias predeterminadas para objeto grande
+  static const List<String> _objetoGrandeSuggestions = [
+    'Maqueta mediana',
+    'Maqueta grande',
+    'Prototipo',
+    'Maleta grande',
+    'Instrumento musical',
+    'Cuadro / lienzo',
+  ];
+
   Widget _buildDescriptionField() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -313,13 +323,57 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
           ],
         ),
         const SizedBox(height: 12),
+
+        // Burbujas de sugerencias predeterminadas
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _objetoGrandeSuggestions.map((suggestion) {
+            final isSelected = _descriptionController.text.trim() == suggestion;
+            return GestureDetector(
+              onTap: () {
+                setState(() {
+                  _descriptionController.text = suggestion;
+                  _descriptionController.selection = TextSelection.fromPosition(
+                    TextPosition(offset: suggestion.length),
+                  );
+                });
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? AppColors.primary.withOpacity(0.15)
+                      : AppColors.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isSelected ? AppColors.primary : AppColors.border,
+                    width: isSelected ? 1.5 : 1,
+                  ),
+                ),
+                child: Text(
+                  suggestion,
+                  style: AppTextStyles.caption.copyWith(
+                    color: isSelected ? AppColors.primary : AppColors.textSecondary,
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+
+        const SizedBox(height: 12),
+
         TextField(
           controller: _descriptionController,
           style: AppTextStyles.body2,
           maxLines: 3,
           maxLength: 100,
           decoration: InputDecoration(
-            hintText: 'Ej: maqueta de arquitectura 80x60cm',
+            hintText: 'O escribe una descripción personalizada...',
             hintStyle: AppTextStyles.body2.copyWith(
               color: AppColors.textTertiary,
             ),
@@ -567,6 +621,16 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
     );
   }
 
+  // Sugerencias predeterminadas para mascota "otro"
+  static const List<String> _otherPetSuggestions = [
+    'Conejo',
+    'Cuy',
+    'Tortuga',
+    'Hámster',
+    'Ave / pájaro',
+    'Pez (pecera)',
+  ];
+
   Widget _buildOtherPetField() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -576,12 +640,56 @@ class _TripPreferencesScreenState extends State<TripPreferencesScreen> {
           style: AppTextStyles.body2.copyWith(fontWeight: FontWeight.w500),
         ),
         const SizedBox(height: 12),
+
+        // Burbujas de sugerencias
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _otherPetSuggestions.map((suggestion) {
+            final isSelected = _petDescriptionController.text.trim() == suggestion;
+            return GestureDetector(
+              onTap: () {
+                setState(() {
+                  _petDescriptionController.text = suggestion;
+                  _petDescriptionController.selection = TextSelection.fromPosition(
+                    TextPosition(offset: suggestion.length),
+                  );
+                });
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? AppColors.primary.withOpacity(0.15)
+                      : AppColors.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isSelected ? AppColors.primary : AppColors.border,
+                    width: isSelected ? 1.5 : 1,
+                  ),
+                ),
+                child: Text(
+                  suggestion,
+                  style: AppTextStyles.caption.copyWith(
+                    color: isSelected ? AppColors.primary : AppColors.textSecondary,
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+
+        const SizedBox(height: 12),
+
         TextField(
           controller: _petDescriptionController,
           style: AppTextStyles.body2,
           maxLength: 50,
           decoration: InputDecoration(
-            hintText: 'Ej: Conejo, cuy, tortuga...',
+            hintText: 'O escribe qué mascota llevas...',
             hintStyle: AppTextStyles.body2.copyWith(
               color: AppColors.textTertiary,
             ),

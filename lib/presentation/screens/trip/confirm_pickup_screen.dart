@@ -2,13 +2,13 @@
 // Pantalla "Confirmar punto de recogida" - Estilo Uber
 // El usuario mueve el mapa y el pin está fijo en el centro
 
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
-import '../../../data/models/trip_model.dart';
 import '../../../data/services/google_places_service.dart';
 
 class ConfirmPickupScreen extends StatefulWidget {
@@ -16,12 +16,6 @@ class ConfirmPickupScreen extends StatefulWidget {
   final String userRole;
   final Map<String, dynamic> origin;
   final Map<String, dynamic> destination;
-  final String preference;
-  final String preferenceDescription;
-  final String? petType;
-  final String? petSize;
-  final String? petDescription;
-  final String paymentMethod;
 
   const ConfirmPickupScreen({
     super.key,
@@ -29,12 +23,6 @@ class ConfirmPickupScreen extends StatefulWidget {
     required this.userRole,
     required this.origin,
     required this.destination,
-    required this.preference,
-    required this.preferenceDescription,
-    this.petType,
-    this.petSize,
-    this.petDescription,
-    required this.paymentMethod,
   });
 
   @override
@@ -52,6 +40,11 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
   bool _isLoadingAddress = false;
   Set<Circle> _circles = {};
 
+  // === Performance: throttle y debounce ===
+  bool _isDragging = false;
+  Timer? _geocodeDebounceTimer;
+  int _geocodeRequestId = 0;
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +59,7 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
 
   @override
   void dispose() {
+    _geocodeDebounceTimer?.cancel();
     _mapController?.dispose();
     _placesService.dispose();
     _referenceController.dispose();
@@ -78,17 +72,29 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
 
   void _onCameraMove(CameraPosition position) {
     _pickupLocation = position.target;
-    if (!_isLoadingAddress) {
+
+    // Al iniciar drag: ocultar círculos de inmediato (un solo setState)
+    if (!_isDragging) {
+      _isDragging = true;
       setState(() {
+        _circles = {};
         _isLoadingAddress = true;
       });
     }
-    // Actualizar los círculos mientras se mueve
-    _createDottedCurve();
+    // NO llamar _createDottedCurve() aquí — se regenera en _onCameraIdle
   }
 
   void _onCameraIdle() {
-    _getAddressFromLatLng(_pickupLocation);
+    _isDragging = false;
+
+    // Regenerar círculos con la posición final (una sola vez)
+    _createDottedCurve();
+
+    // Debounce geocoding: cancelar timer previo, esperar 400ms
+    _geocodeDebounceTimer?.cancel();
+    _geocodeDebounceTimer = Timer(const Duration(milliseconds: 400), () {
+      _getAddressFromLatLng(_pickupLocation);
+    });
   }
 
   /// Crear círculos a lo largo de una curva (estilo Uber)
@@ -203,11 +209,17 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
   }
 
   Future<void> _getAddressFromLatLng(LatLng position) async {
+    // Incrementar ID para invalidar cualquier request previo in-flight
+    final requestId = ++_geocodeRequestId;
+
     try {
       final result = await _placesService.reverseGeocode(
         position.latitude,
         position.longitude,
       );
+
+      // Si hubo otro request después de este, descartar resultado
+      if (requestId != _geocodeRequestId) return;
 
       if (result != null && mounted) {
         setState(() {
@@ -221,6 +233,8 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
         });
       }
     } catch (e) {
+      if (requestId != _geocodeRequestId) return;
+
       if (mounted) {
         setState(() {
           _pickupAddress = 'Ubicación seleccionada';
@@ -231,51 +245,21 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
   }
 
   void _onConfirmPickup() {
-    // Convertir Maps a TripLocation para PassengerWaitingScreen
-    final origin = TripLocation(
-      name: widget.origin['name'] as String? ?? '',
-      address: widget.origin['address'] as String? ?? '',
-      latitude: widget.origin['latitude'] as double,
-      longitude: widget.origin['longitude'] as double,
-    );
-
-    final destination = TripLocation(
-      name: widget.destination['name'] as String? ?? '',
-      address: widget.destination['address'] as String? ?? '',
-      latitude: widget.destination['latitude'] as double,
-      longitude: widget.destination['longitude'] as double,
-    );
-
-    final pickupPoint = TripLocation(
-      name: _pickupAddress,
-      address: _pickupAddress,
-      latitude: _pickupLocation.latitude,
-      longitude: _pickupLocation.longitude,
-    );
-
     final reference = _referenceController.text.trim();
 
-    // Splitear preferencias: "mochila,objeto_grande,mascota" → ["mochila", "objeto_grande", "mascota"]
-    final preferences = widget.preference
-        .split(',')
-        .map((p) => p.trim())
-        .where((p) => p.isNotEmpty)
-        .toList();
-
-    context.push('/trip/waiting', extra: {
+    // Navegar a MapRouteScreen con el pickup point seleccionado
+    context.push('/trip/map', extra: {
       'userId': widget.userId,
-      'origin': origin,
-      'destination': destination,
-      'pickupPoint': pickupPoint,
+      'userRole': widget.userRole,
+      'origin': widget.origin,
+      'destination': widget.destination,
+      'pickupPoint': {
+        'name': _pickupAddress,
+        'address': _pickupAddress,
+        'latitude': _pickupLocation.latitude,
+        'longitude': _pickupLocation.longitude,
+      },
       'referenceNote': reference.isNotEmpty ? reference : null,
-      'preferences': preferences,
-      'objectDescription': widget.preferenceDescription.isNotEmpty
-          ? widget.preferenceDescription
-          : null,
-      'petType': widget.petType,
-      'petSize': widget.petSize,
-      'petDescription': widget.petDescription,
-      'paymentMethod': widget.paymentMethod,
     });
   }
 
@@ -291,7 +275,7 @@ class _ConfirmPickupScreenState extends State<ConfirmPickupScreen> {
             child: GoogleMap(
               initialCameraPosition: CameraPosition(
                 target: _pickupLocation,
-                zoom: 23,
+                zoom: 18,
               ),
               onMapCreated: _onMapCreated,
               onCameraMove: _onCameraMove,

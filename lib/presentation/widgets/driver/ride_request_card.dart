@@ -12,14 +12,14 @@ import '../../../data/models/user_model.dart';
 class RideRequestCard extends StatelessWidget {
   final RideRequestModel request;
   final UserModel? passengerUser;
-  final int? deviationMinutes;
+  final int? etaMinutes;
   final VoidCallback onTap;
 
   const RideRequestCard({
     super.key,
     required this.request,
     this.passengerUser,
-    this.deviationMinutes,
+    this.etaMinutes,
     required this.onTap,
   });
 
@@ -193,8 +193,8 @@ class RideRequestCard extends StatelessWidget {
           ),
         ),
 
-        // Badge de desvío
-        if (deviationMinutes != null) _buildDeviationBadge(),
+        // Badge de ETA
+        if (etaMinutes != null) _buildEtaBadge(),
       ],
     );
   }
@@ -259,27 +259,30 @@ class RideRequestCard extends StatelessWidget {
     return '$firstName $lastInitial';
   }
 
-  Widget _buildDeviationBadge() {
+  Widget _buildEtaBadge() {
+    final bool isClose = etaMinutes != null && etaMinutes! <= 5;
+    final color = isClose ? AppColors.success : AppColors.warning;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: AppColors.warning.withOpacity(0.15),
+        color: color.withOpacity(0.15),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
-            Icons.add,
+          Icon(
+            Icons.access_time,
             size: 14,
-            color: AppColors.warning,
+            color: color,
           ),
-          const SizedBox(width: 2),
+          const SizedBox(width: 4),
           Text(
-            '$deviationMinutes min',
+            '$etaMinutes min',
             style: AppTextStyles.caption.copyWith(
               fontWeight: FontWeight.w600,
-              color: AppColors.warning,
+              color: color,
             ),
           ),
         ],

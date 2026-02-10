@@ -46,7 +46,11 @@ class TtsService {
   /// Solo habla si no hay navegación activa
   Future<void> speakRequest(String text) async {
     await init();
-    if (_isSpeakingNavigation) return; // No interrumpir navegación
+    if (_isSpeakingNavigation) {
+      print('[TTS-SERVICE] speakRequest BLOQUEADO por navegacion activa. Texto: $text');
+      return;
+    }
+    print('[TTS-SERVICE] speakRequest: $text');
     await _tts.speak(text);
   }
 

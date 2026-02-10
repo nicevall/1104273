@@ -20,6 +20,10 @@ class UserModel extends Equatable {
   final String? profilePhotoUrl;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final int paymentStrikes;       // 0, 1, 2, 3 — strikes por falta de pago
+  final DateTime? bannedUntil;    // Fecha hasta la que está suspendido
+  final bool accountBlocked;      // true = bloqueado permanente (3 strikes)
+  final String? fcmToken;         // Token FCM para notificaciones push
 
   const UserModel({
     required this.userId,
@@ -37,6 +41,10 @@ class UserModel extends Equatable {
     this.profilePhotoUrl,
     required this.createdAt,
     required this.updatedAt,
+    this.paymentStrikes = 0,
+    this.bannedUntil,
+    this.accountBlocked = false,
+    this.fcmToken,
   });
 
   // Nombre completo
@@ -69,6 +77,12 @@ class UserModel extends Equatable {
       profilePhotoUrl: json['profilePhotoUrl'] as String?,
       createdAt: (json['createdAt'] as Timestamp).toDate(),
       updatedAt: (json['updatedAt'] as Timestamp).toDate(),
+      paymentStrikes: json['paymentStrikes'] as int? ?? 0,
+      bannedUntil: json['bannedUntil'] != null
+          ? (json['bannedUntil'] as Timestamp).toDate()
+          : null,
+      accountBlocked: json['accountBlocked'] as bool? ?? false,
+      fcmToken: json['fcmToken'] as String?,
     );
   }
 
@@ -90,6 +104,10 @@ class UserModel extends Equatable {
       'profilePhotoUrl': profilePhotoUrl,
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': Timestamp.fromDate(updatedAt),
+      'paymentStrikes': paymentStrikes,
+      'bannedUntil': bannedUntil != null ? Timestamp.fromDate(bannedUntil!) : null,
+      'accountBlocked': accountBlocked,
+      'fcmToken': fcmToken,
     };
   }
 
@@ -116,6 +134,10 @@ class UserModel extends Equatable {
     String? profilePhotoUrl,
     DateTime? createdAt,
     DateTime? updatedAt,
+    int? paymentStrikes,
+    DateTime? bannedUntil,
+    bool? accountBlocked,
+    String? fcmToken,
   }) {
     return UserModel(
       userId: userId ?? this.userId,
@@ -133,6 +155,10 @@ class UserModel extends Equatable {
       profilePhotoUrl: profilePhotoUrl ?? this.profilePhotoUrl,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      paymentStrikes: paymentStrikes ?? this.paymentStrikes,
+      bannedUntil: bannedUntil ?? this.bannedUntil,
+      accountBlocked: accountBlocked ?? this.accountBlocked,
+      fcmToken: fcmToken ?? this.fcmToken,
     );
   }
 
@@ -153,5 +179,9 @@ class UserModel extends Equatable {
         profilePhotoUrl,
         createdAt,
         updatedAt,
+        paymentStrikes,
+        bannedUntil,
+        accountBlocked,
+        fcmToken,
       ];
 }

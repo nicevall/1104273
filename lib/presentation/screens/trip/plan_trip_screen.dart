@@ -366,7 +366,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       _saveRecentSearch(suggestion, details);
 
       // Navegar al mapa
-      _navigateToMapWithDetails(details);
+      _navigateToConfirmPickup(details);
     }
   }
 
@@ -393,16 +393,16 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
     }
   }
 
-  void _navigateToMapWithDetails(PlaceDetails destination) {
+  void _navigateToConfirmPickup(PlaceDetails destination) {
     final originLat = _originLatitude ?? -3.9931;
     final originLng = _originLongitude ?? -79.2042;
 
-    context.push('/trip/map', extra: {
+    context.push('/trip/confirm-pickup', extra: {
       'userId': widget.userId,
       'userRole': widget.userRole,
       'origin': {
         'name': _originController.text,
-        'address': _originAddress ?? _originController.text, // Dirección completa
+        'address': _originAddress ?? _originController.text,
         'latitude': originLat,
         'longitude': originLng,
       },
@@ -724,7 +724,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       longitude: search['longitude'] as double,
     );
 
-    _navigateToMapWithDetails(destination);
+    _navigateToConfirmPickup(destination);
   }
 
   Widget _buildMapPickerOption() {
@@ -789,7 +789,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
           latitude: result['latitude'] as double,
           longitude: result['longitude'] as double,
         );
-        _navigateToMapWithDetails(destination);
+        _navigateToConfirmPickup(destination);
       }
     });
   }
@@ -848,7 +848,7 @@ class _PlanTripScreenState extends State<PlanTripScreen> {
       longitude: -79.19933,
     );
 
-    _navigateToMapWithDetails(destination);
+    _navigateToConfirmPickup(destination);
   }
 
   Widget _buildSuggestionsList() {

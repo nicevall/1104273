@@ -2,6 +2,7 @@
 // Pantalla de calificación del conductor por parte del pasajero
 // Se muestra después de completar un viaje o cuando el conductor cancela
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -136,7 +137,8 @@ class _RateDriverScreenState extends State<RateDriverScreen> {
             backgroundColor: AppColors.success,
           ),
         );
-        context.go('/home');
+        // Limpiar ride_request y verificar si hay más reseñas pendientes
+        await _cleanupAndNavigate();
       }
     } catch (e) {
       debugPrint('Error al enviar calificación: $e');
@@ -152,7 +154,40 @@ class _RateDriverScreenState extends State<RateDriverScreen> {
     }
   }
 
-  void _skipRating() {
+  Future<void> _skipRating() async {
+    // Registrar en Firestore que se omitió la calificación
+    // para que hasRated() retorne true y no quede pendiente para siempre
+    await _ratingService.submitSkippedRating(
+      tripId: widget.tripId,
+      raterId: widget.passengerId,
+      ratedUserId: widget.driverId,
+      raterRole: 'pasajero',
+    );
+    _cleanupAndNavigate();
+  }
+
+  /// Limpiar ride_request del pasajero y navegar a siguiente reseña pendiente o home
+  Future<void> _cleanupAndNavigate() async {
+    try {
+      // Limpiar ride_requests activas de este pasajero
+      final firestore = FirebaseFirestore.instance;
+      final activeReqs = await firestore
+          .collection('ride_requests')
+          .where('passengerId', isEqualTo: widget.passengerId)
+          .where('status', whereIn: ['searching', 'reviewing', 'accepted'])
+          .get();
+
+      for (final doc in activeReqs.docs) {
+        await doc.reference.update({
+          'status': 'completed',
+          'completedAt': Timestamp.now(),
+        });
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error limpiando ride_request: $e');
+    }
+
+    if (!mounted) return;
     context.go('/home');
   }
 
@@ -160,22 +195,14 @@ class _RateDriverScreenState extends State<RateDriverScreen> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) {
-          _skipRating();
-        }
-      },
       child: Scaffold(
         backgroundColor: Colors.white,
         appBar: AppBar(
           backgroundColor: Colors.white,
           elevation: 0,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
-            onPressed: _skipRating,
-          ),
+          automaticallyImplyLeading: false,
           title: Text(
-            'Calificar',
+            'Califica al conductor',
             style: AppTextStyles.h3.copyWith(color: AppColors.textPrimary),
           ),
           centerTitle: true,
@@ -203,21 +230,6 @@ class _RateDriverScreenState extends State<RateDriverScreen> {
 
               // === Tags dinámicos ===
               _buildTagsSection(),
-
-              const SizedBox(height: 20),
-
-              // === Omitir calificación ===
-              GestureDetector(
-                onTap: _skipRating,
-                child: Text(
-                  'Omitir calificación',
-                  style: AppTextStyles.body2.copyWith(
-                    decoration: TextDecoration.underline,
-                    color: AppColors.primary,
-                    decorationColor: AppColors.primary,
-                  ),
-                ),
-              ),
 
               const SizedBox(height: 24),
 

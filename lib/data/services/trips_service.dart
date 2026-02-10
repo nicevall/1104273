@@ -96,7 +96,7 @@ class TripsService {
 
   /// Cancelar viaje
   ///
-  /// Solo cancela si el viaje está en estado 'scheduled'
+  /// Cancela el viaje y limpia todas las ride_requests asociadas
   Future<void> cancelTrip(String tripId) async {
     try {
       await _firestore
@@ -106,6 +106,9 @@ class TripsService {
         'status': 'cancelled',
         'completedAt': Timestamp.now(),
       });
+
+      // Limpiar ride_requests asociadas a este viaje
+      await _cleanupRideRequests(tripId, 'cancelled');
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
     } catch (e) {
@@ -180,11 +183,14 @@ class TripsService {
   }
 
   /// Actualizar estado de pago de un pasajero
+  ///
+  /// [paymentNote] opcional: razón de falta de pago (cuando status = 'unpaid')
   Future<void> updatePassengerPaymentStatus(
     String tripId,
     String passengerId,
-    String newPaymentStatus,
-  ) async {
+    String newPaymentStatus, {
+    String? paymentNote,
+  }) async {
     try {
       final tripDoc = await _firestore.collection(_tripsCollection).doc(tripId).get();
       if (!tripDoc.exists) return;
@@ -197,6 +203,9 @@ class TripsService {
       final idx = passengers.indexWhere((p) => p['userId'] == passengerId);
       if (idx >= 0) {
         passengers[idx]['paymentStatus'] = newPaymentStatus;
+        if (paymentNote != null) {
+          passengers[idx]['paymentNote'] = paymentNote;
+        }
         await _firestore.collection(_tripsCollection).doc(tripId).update({
           'passengers': passengers,
         });
@@ -353,6 +362,12 @@ class TripsService {
   /// Agrega un TripPassenger con status 'pending' al array de passengers
   /// y decrementa availableSeats
   Future<void> requestToJoin(String tripId, TripPassenger passenger) async {
+    // Validar que el pasajero tenga userId
+    if (passenger.userId.isEmpty) {
+      debugPrint('⚠️ requestToJoin: ignorando pasajero con userId vacío');
+      throw Exception('No se puede agregar pasajero sin userId');
+    }
+
     try {
       await _firestore
           .collection(_tripsCollection)
@@ -478,7 +493,7 @@ class TripsService {
     }
   }
 
-  /// Completar viaje
+  /// Completar viaje y limpiar ride_requests asociadas
   Future<void> completeTrip(String tripId) async {
     try {
       await _firestore
@@ -488,10 +503,62 @@ class TripsService {
         'status': 'completed',
         'completedAt': Timestamp.now(),
       });
+
+      // Limpiar ride_requests asociadas a este viaje
+      await _cleanupRideRequests(tripId, 'completed');
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
     } catch (e) {
       throw Exception('Error al completar viaje: $e');
+    }
+  }
+
+  /// Limpiar TODAS las ride_requests asociadas a un viaje
+  /// Busca por tripId Y por passengerId de cada pasajero
+  Future<void> _cleanupRideRequests(String tripId, String newStatus) async {
+    try {
+      // 1. Buscar ride_requests que referencian este tripId
+      final byTripId = await _firestore
+          .collection('ride_requests')
+          .where('tripId', isEqualTo: tripId)
+          .where('status', whereIn: ['searching', 'reviewing', 'accepted'])
+          .get();
+
+      for (final doc in byTripId.docs) {
+        await doc.reference.update({
+          'status': newStatus,
+          'completedAt': Timestamp.now(),
+        });
+      }
+
+      // 2. Buscar por passengerId de los pasajeros del viaje
+      final tripDoc = await _firestore.collection(_tripsCollection).doc(tripId).get();
+      if (tripDoc.exists) {
+        final passengers = tripDoc.data()?['passengers'] as List<dynamic>? ?? [];
+        for (final p in passengers) {
+          final pMap = p as Map<String, dynamic>;
+          final passengerId = pMap['userId'] as String? ?? '';
+          if (passengerId.isEmpty) continue;
+
+          final byPassenger = await _firestore
+              .collection('ride_requests')
+              .where('passengerId', isEqualTo: passengerId)
+              .where('status', whereIn: ['searching', 'reviewing', 'accepted'])
+              .get();
+
+          for (final doc in byPassenger.docs) {
+            await doc.reference.update({
+              'status': newStatus,
+              'completedAt': Timestamp.now(),
+            });
+          }
+        }
+      }
+
+      debugPrint('🧹 Limpieza ride_requests para trip $tripId ($newStatus)');
+    } catch (e) {
+      // No lanzar — la limpieza es best-effort
+      debugPrint('⚠️ Error limpiando ride_requests: $e');
     }
   }
 
@@ -533,6 +600,11 @@ class TripsService {
         'passengers': updatedPassengers.map((p) => p.toJson()).toList(),
         'availableSeats': newAvailableSeats,
       });
+
+      // Limpiar ride_request cuando el pasajero sale del viaje
+      if (newStatus == 'no_show' || newStatus == 'cancelled' || newStatus == 'dropped_off') {
+        _cleanupPassengerRideRequest(passengerId, newStatus == 'dropped_off' ? 'completed' : 'cancelled');
+      }
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
     } catch (e) {
@@ -595,6 +667,8 @@ class TripsService {
     required double meterDistanceKm,
     required double meterWaitMinutes,
     required double meterFare,
+    double discountPercent = 0.0,
+    double fareBeforeDiscount = 0.0,
   }) async {
     try {
       final trip = await getTrip(tripId);
@@ -607,6 +681,8 @@ class TripsService {
             meterWaitMinutes: meterWaitMinutes,
             meterFare: meterFare,
             meterLastUpdated: DateTime.now(),
+            discountPercent: discountPercent,
+            fareBeforeDiscount: fareBeforeDiscount,
           );
         }
         return p;
@@ -666,10 +742,36 @@ class TripsService {
           .update({
         'passengers': updatedPassengers.map((p) => p.toJson()).toList(),
       });
+
+      // Limpiar ride_request del pasajero que fue bajado
+      _cleanupPassengerRideRequest(passengerId, 'completed');
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
     } catch (e) {
       throw Exception('Error al bajar pasajero: $e');
+    }
+  }
+
+  /// Limpiar ride_request de un pasajero específico
+  Future<void> _cleanupPassengerRideRequest(String passengerId, String newStatus) async {
+    try {
+      final snap = await _firestore
+          .collection('ride_requests')
+          .where('passengerId', isEqualTo: passengerId)
+          .where('status', whereIn: ['searching', 'reviewing', 'accepted'])
+          .get();
+
+      for (final doc in snap.docs) {
+        await doc.reference.update({
+          'status': newStatus,
+          'completedAt': Timestamp.now(),
+        });
+      }
+      if (snap.docs.isNotEmpty) {
+        debugPrint('🧹 Limpieza ride_request de pasajero $passengerId ($newStatus)');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error limpiando ride_request del pasajero: $e');
     }
   }
 
@@ -698,6 +800,75 @@ class TripsService {
     final c = 2 * atan2(sqrt(a), sqrt(1 - a));
 
     return earthRadius * c;
+  }
+
+  // ==================== Destinos Recientes ====================
+
+  /// Obtener últimos destinos únicos del pasajero (para "recientes" en home)
+  ///
+  /// Consulta ride_requests completadas → fetch trips → deduplica por nombre
+  Future<List<Map<String, dynamic>>> getRecentPassengerDestinations(
+    String passengerId, {
+    int limit = 5,
+  }) async {
+    try {
+      // 1. Query ride_requests completadas del pasajero
+      final reqSnap = await _firestore
+          .collection('ride_requests')
+          .where('passengerId', isEqualTo: passengerId)
+          .where('status', isEqualTo: 'completed')
+          .get();
+
+      // 2. Extraer tripIds únicos
+      final tripIds = reqSnap.docs
+          .map((d) => d.data()['tripId'] as String?)
+          .where((id) => id != null && id.isNotEmpty)
+          .cast<String>()
+          .toSet();
+
+      if (tripIds.isEmpty) return [];
+
+      // 3. Fetch trips
+      final trips = <TripModel>[];
+      for (final tripId in tripIds) {
+        try {
+          final doc =
+              await _firestore.collection(_tripsCollection).doc(tripId).get();
+          if (doc.exists) {
+            trips.add(TripModel.fromFirestore(doc));
+          }
+        } catch (_) {
+          // Skip trips que no se pueden cargar
+        }
+      }
+
+      // 4. Ordenar por fecha más reciente
+      trips.sort((a, b) {
+        final aTime = a.completedAt ?? a.departureTime;
+        final bTime = b.completedAt ?? b.departureTime;
+        return bTime.compareTo(aTime);
+      });
+
+      // 5. Deduplicar por nombre de destino (quedarse con el más reciente)
+      final seen = <String>{};
+      final results = <Map<String, dynamic>>[];
+      for (final trip in trips) {
+        final key = trip.destination.name.toLowerCase().trim();
+        if (seen.contains(key)) continue;
+        seen.add(key);
+        results.add({
+          'name': trip.destination.name,
+          'address': trip.destination.address,
+          'latitude': trip.destination.latitude,
+          'longitude': trip.destination.longitude,
+        });
+        if (results.length >= limit) break;
+      }
+      return results;
+    } catch (e) {
+      debugPrint('Error cargando destinos recientes: $e');
+      return [];
+    }
   }
 
   double _degreesToRadians(double degrees) {

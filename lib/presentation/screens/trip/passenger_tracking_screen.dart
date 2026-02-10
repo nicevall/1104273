@@ -14,10 +14,14 @@ import '../../../core/constants/app_text_styles.dart';
 import '../../../core/utils/car_marker_generator.dart';
 import '../../../data/models/trip_model.dart';
 import '../../../data/models/user_model.dart';
+import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/trips_service.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/google_directions_service.dart';
 import '../../../data/services/chat_service.dart';
+import '../../../data/services/pricing_service.dart';
+import '../../../data/services/notification_service.dart';
+import '../../../data/models/chat_message.dart';
 import '../../widgets/chat/chat_bottom_sheet.dart';
 
 class PassengerTrackingScreen extends StatefulWidget {
@@ -56,6 +60,7 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
   // Viaje y conductor
   TripModel? _currentTrip;
   UserModel? _driverUser;
+  VehicleModel? _driverVehicle;
   String _driverId = ''; // Capturado temprano para uso en diálogos
   StreamSubscription<TripModel?>? _tripSubscription;
 
@@ -73,6 +78,8 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
   double? _meterWaitMinutes;
   bool? _isNightTariff;
   DateTime? _pickedUpAt;
+  double? _discountPercent;
+  double? _fareBeforeDiscount;
 
   // Animación
   late AnimationController _markerAnimController;
@@ -80,9 +87,13 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
-  // ETA
+  // ETA (Google Directions API)
   double? _distanceToPassenger; // metros
   String _etaText = 'Calculando...';
+  String _distanceText = '';
+  DateTime? _lastEtaUpdate;
+  bool _isCalculatingEta = false;
+  static const _etaUpdateInterval = Duration(seconds: 30);
 
   // Timer de espera (cuando el conductor llega al pickup)
   bool _driverArrivedAtPickup = false;
@@ -97,14 +108,36 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
   double _cachedBearing = 0;
   DateTime? _lastMarkerUpdate;
 
+  // === Protección: detección de conductor desconectado ===
+  static const int _locationWarningSeconds = 120;  // 2 min → banner amarillo
+  static const int _locationCriticalSeconds = 300;  // 5 min → diálogo cancelar
+  bool _driverLocationStale = false;
+  bool _driverLocationCritical = false;
+  Timer? _staleLocationCheckTimer;
+  bool _criticalDialogShown = false;
+
+  // === Mensajes no leídos ===
+  int _unreadMessageCount = 0;
+  int _lastSeenDriverMessageCount = 0;
+  StreamSubscription<List<ChatMessage>>? _chatSubscription;
+
+  // === Abrir chat desde notificación ===
+  StreamSubscription<Map<String, String>>? _openChatSub;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // NO suprimir notificaciones aquí — el pasajero necesita saber
+    // que el conductor llegó y recibir mensajes mientras espera en pickup.
+    // La supresión se activa cuando el pasajero sube al carro (picked_up).
     _initAnimations();
     _loadCarIcon();
     _initPickupCircle();
     _startTripStream();
+    _startStaleLocationCheck();
+    _startUnreadMessageStream();
+    _listenForChatOpen();
   }
 
   @override
@@ -213,6 +246,15 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     if (trip.driverLatitude != null && trip.driverLongitude != null) {
       final newPos = LatLng(trip.driverLatitude!, trip.driverLongitude!);
 
+      // Resetear detección de conductor desconectado al recibir GPS fresco
+      if (_driverLocationStale || _driverLocationCritical) {
+        setState(() {
+          _driverLocationStale = false;
+          _driverLocationCritical = false;
+          _criticalDialogShown = false;
+        });
+      }
+
       if (_driverPosition != null && _driverPosition != newPos) {
         _previousDriverPosition = _driverPosition;
         _driverPosition = newPos;
@@ -244,6 +286,8 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
         _meterWaitMinutes = passenger.meterWaitMinutes;
         _isNightTariff = passenger.isNightTariff;
         _pickedUpAt = passenger.pickedUpAt;
+        _discountPercent = passenger.discountPercent;
+        _fareBeforeDiscount = passenger.fareBeforeDiscount;
       }
 
       // Cuando es dropped_off, el price final está congelado
@@ -299,6 +343,13 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
       if (mounted) {
         setState(() => _driverUser = user);
       }
+      // Cargar vehículo del conductor
+      if (_currentTrip != null && _currentTrip!.vehicleId.isNotEmpty) {
+        final vehicle = await _firestoreService.getVehicle(_currentTrip!.vehicleId);
+        if (mounted) {
+          setState(() => _driverVehicle = vehicle);
+        }
+      }
     } catch (e) {
       debugPrint('Error cargando info conductor: $e');
     }
@@ -316,11 +367,9 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     _markerAnimController.addListener(_onMarkerAnimTick);
     _markerAnimController.forward();
 
-    // Fix P1: Mover cámara UNA sola vez al destino final (no 60 veces en el tick)
+    // Mover cámara mostrando conductor + pickup dinámicamente
     if (_driverPosition != null) {
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLng(_driverPosition!),
-      );
+      _fitCameraToDriverAndPickup();
     }
   }
 
@@ -345,9 +394,32 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     if (_driverPosition == null) return;
     _updateMarkersWithPosition(_driverPosition!);
 
-    // Centrar cámara
-    _mapController?.animateCamera(
-      CameraUpdate.newLatLngZoom(_driverPosition!, 15),
+    // Centrar cámara mostrando conductor + pickup
+    _fitCameraToDriverAndPickup();
+  }
+
+  /// Ajusta la cámara para mostrar conductor y punto de recogida
+  void _fitCameraToDriverAndPickup() {
+    if (_driverPosition == null || _mapController == null) return;
+
+    final pickupLat = widget.pickupPoint.latitude;
+    final pickupLng = widget.pickupPoint.longitude;
+    final driverLat = _driverPosition!.latitude;
+    final driverLng = _driverPosition!.longitude;
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(
+        driverLat < pickupLat ? driverLat : pickupLat,
+        driverLng < pickupLng ? driverLng : pickupLng,
+      ),
+      northeast: LatLng(
+        driverLat > pickupLat ? driverLat : pickupLat,
+        driverLng > pickupLng ? driverLng : pickupLng,
+      ),
+    );
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(bounds, 100),
     );
   }
 
@@ -489,27 +561,40 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
         ? widget.destination.longitude
         : widget.pickupPoint.longitude;
 
+    // Distancia en línea recta (para detección de cercanía)
     final distance = Geolocator.distanceBetween(
       _driverPosition!.latitude,
       _driverPosition!.longitude,
       targetLat,
       targetLng,
     );
+    _distanceToPassenger = distance;
 
-    setState(() {
-      _distanceToPassenger = distance;
+    // Throttle: calcular ETA con Google Directions API cada 30s
+    final now = DateTime.now();
+    if (_isCalculatingEta) return;
+    if (_lastEtaUpdate != null &&
+        now.difference(_lastEtaUpdate!) < _etaUpdateInterval) return;
 
-      // Estimado simple: velocidad promedio 30 km/h en ciudad
-      final etaMinutes = (distance / 1000) / 30 * 60;
-      if (etaMinutes < 1) {
-        _etaText = 'Llegando...';
-      } else if (etaMinutes < 60) {
-        _etaText = '${etaMinutes.ceil()} min';
-      } else {
-        final hours = etaMinutes ~/ 60;
-        final mins = (etaMinutes % 60).ceil();
-        _etaText = '${hours}h ${mins}min';
+    _isCalculatingEta = true;
+    _lastEtaUpdate = now;
+
+    _directionsService.getRoute(
+      originLat: _driverPosition!.latitude,
+      originLng: _driverPosition!.longitude,
+      destLat: targetLat,
+      destLng: targetLng,
+    ).then((route) {
+      if (route != null && mounted) {
+        setState(() {
+          _etaText = route.durationText;
+          _distanceText = route.distanceText;
+        });
       }
+    }).catchError((e) {
+      debugPrint('Error calculando ETA: $e');
+    }).whenComplete(() {
+      _isCalculatingEta = false;
     });
   }
 
@@ -559,13 +644,35 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
             ),
             if (_meterFare != null) ...[
               const SizedBox(height: 12),
-              Text(
-                'Tarifa: \$${_meterFare!.toStringAsFixed(2)}',
-                style: AppTextStyles.h3.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.primary,
-                ),
-                textAlign: TextAlign.center,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Tarifa: \$${_meterFare!.toStringAsFixed(2)}',
+                    style: AppTextStyles.h3.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                  if (_discountPercent != null && _discountPercent! > 0) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.success.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        '-${(_discountPercent! * 100).round()}% grupo',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.success,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ],
           ],
@@ -701,6 +808,8 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     final fare = passenger.price > 0 ? passenger.price : (_meterFare ?? 0);
     final distance = passenger.meterDistanceKm ?? _meterDistanceKm ?? 0;
     final isNight = passenger.isNightTariff ?? false;
+    final discount = passenger.discountPercent ?? _discountPercent ?? 0.0;
+    final beforeDiscount = passenger.fareBeforeDiscount ?? _fareBeforeDiscount;
 
     showDialog(
       context: context,
@@ -770,6 +879,30 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
               ),
             ),
             const SizedBox(height: 16),
+
+            // Descuento grupal (si aplica)
+            if (discount > 0 && beforeDiscount != null) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Desc. grupo (${(discount * 100).round()}%)',
+                    style: AppTextStyles.body2.copyWith(
+                      color: AppColors.success,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    '-\$${(beforeDiscount - fare).toStringAsFixed(2)}',
+                    style: AppTextStyles.body2.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.success,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
 
             // Total
             Row(
@@ -969,10 +1102,35 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
+  /// Escuchar eventos de abrir chat desde notificaciones tocadas
+  void _listenForChatOpen() {
+    _openChatSub = NotificationService().onOpenChatRequested.listen((data) {
+      final tripId = data['tripId'] ?? '';
+      if (tripId != widget.tripId || !mounted) return;
+
+      debugPrint('🔔 Pasajero: abriendo chat desde notificación');
+
+      ChatBottomSheet.show(
+        context,
+        tripId: widget.tripId,
+        passengerId: widget.userId,
+        currentUserId: widget.userId,
+        currentUserRole: 'pasajero',
+        isActive: _passengerStatus == 'accepted',
+        otherUserName: _driverUser != null
+            ? '${_driverUser!.firstName} ${_driverUser!.lastName}'
+            : 'Conductor',
+      );
+    });
+  }
+
   @override
   void dispose() {
+    _openChatSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _waitCountdownTimer?.cancel();
+    _staleLocationCheckTimer?.cancel();
+    _chatSubscription?.cancel();
     _tripSubscription?.cancel();
     _markerAnimController.dispose();
     _pulseController.dispose();
@@ -1011,11 +1169,12 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
             // Overlay superior con estado
             _buildTopOverlay(),
 
-            // Card inferior con info del conductor
-            _buildBottomCard(),
+            // Banner de conductor desconectado
+            if (_driverLocationStale && !_driverArrivedAtPickup)
+              _buildStaleLocationBanner(),
 
-            // Overlay grande de espera (cuando el conductor llega al pickup)
-            if (_driverArrivedAtPickup && !_isPickedUp) _buildWaitingOverlay(),
+            // Card inferior con info del conductor (incluye timer de espera)
+            _buildBottomCard(),
           ],
         ),
       ),
@@ -1023,12 +1182,23 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
   }
 
   void _showExitConfirmation() {
+    if (!_isPickedUp) {
+      // PRE-PICKUP: Cancelar viaje (el pasajero aún no subió)
+      _showCancelTripDialog();
+    } else {
+      // POST-PICKUP: Confirmar cancelación → pagar tarifa mínima
+      _showCancelWithMinimumFareDialog();
+    }
+  }
+
+  /// Pre-pickup: diálogo para cancelar el viaje antes de subir
+  void _showCancelTripDialog() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('¿Salir del tracking?'),
+        title: const Text('¿Cancelar viaje?'),
         content: const Text(
-          'Puedes volver a ver el seguimiento desde la pantalla principal.',
+          'Se cancelará tu solicitud y podrás buscar otro viaje.',
         ),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
@@ -1055,19 +1225,338 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
               const SizedBox(width: 16),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     Navigator.pop(ctx);
-                    context.go('/home');
+                    // Cancelar suscripción y timers
+                    _tripSubscription?.cancel();
+                    _waitCountdownTimer?.cancel();
+                    _chatSubscription?.cancel();
+                    // Actualizar status del pasajero en el trip
+                    try {
+                      await _tripsService.updatePassengerStatus(
+                        widget.tripId,
+                        widget.userId,
+                        'cancelled',
+                      );
+                    } catch (e) {
+                      debugPrint('Error cancelando pasajero en trip: $e');
+                    }
+                    // Limpiar ride_request
+                    await _cleanupRideRequest('cancelled');
+                    if (mounted) context.go('/home');
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
+                    backgroundColor: AppColors.error,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
-                  child: const Text('Salir'),
+                  child: const Text('Cancelar viaje'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Post-pickup: cancelar viaje en curso → pagar tarifa mínima
+  void _showCancelWithMinimumFareDialog() {
+    final minimumFare = PricingService().getCurrentMinimumFare();
+    final isNight = PricingService().isNightTime();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Cancelar viaje en curso?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Ya estás en el vehículo. Si cancelas, deberás pagar la tarifa mínima de carrera.',
+            ),
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.warning.withOpacity(0.3)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.attach_money, color: AppColors.warning, size: 20),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Tarifa mínima: \$${minimumFare.toStringAsFixed(2)}',
+                    style: AppTextStyles.body1.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.warning,
+                    ),
+                  ),
+                  if (isNight) ...[
+                    const SizedBox(width: 6),
+                    const Icon(Icons.nightlight_round, size: 14, color: AppColors.warning),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Seguir viaje'),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    _tripSubscription?.cancel();
+                    _waitCountdownTimer?.cancel();
+                    _chatSubscription?.cancel();
+                    // Cancelar pasajero en el trip
+                    try {
+                      await _tripsService.updatePassengerStatus(
+                        widget.tripId,
+                        widget.userId,
+                        'cancelled',
+                      );
+                    } catch (e) {
+                      debugPrint('Error cancelando pasajero en trip: $e');
+                    }
+                    await _cleanupRideRequest('cancelled');
+                    // Navegar a rating con contexto de tarifa mínima
+                    if (mounted) {
+                      context.go('/trip/rate', extra: {
+                        'tripId': widget.tripId,
+                        'passengerId': widget.userId,
+                        'driverId': _driverId,
+                        'ratingContext': 'cancelled',
+                        'fare': minimumFare,
+                      });
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Cancelar y pagar'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // PROTECCIÓN: Detección de conductor desconectado
+  // ============================================================
+
+  void _startStaleLocationCheck() {
+    _staleLocationCheckTimer?.cancel();
+    _staleLocationCheckTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _checkDriverLocationStaleness(),
+    );
+  }
+
+  void _checkDriverLocationStaleness() {
+    if (!mounted || _currentTrip == null) return;
+
+    // Solo durante viaje activo
+    if (_currentTrip!.status != 'in_progress') return;
+
+    final updatedAt = _currentTrip!.driverLocationUpdatedAt;
+    if (updatedAt == null) return;
+
+    final secondsSinceUpdate = DateTime.now().difference(updatedAt).inSeconds;
+
+    final wasStale = _driverLocationStale;
+
+    setState(() {
+      _driverLocationStale = secondsSinceUpdate >= _locationWarningSeconds;
+      _driverLocationCritical = secondsSinceUpdate >= _locationCriticalSeconds;
+    });
+
+    // Mostrar diálogo crítico una sola vez
+    if (_driverLocationCritical && !_criticalDialogShown) {
+      _criticalDialogShown = true;
+      _showDriverDisconnectedDialog();
+    }
+
+    // Reset flag cuando el conductor reconecta
+    if (!_driverLocationStale && wasStale) {
+      _criticalDialogShown = false;
+    }
+  }
+
+  // ============================================================
+  // MENSAJES NO LEÍDOS
+  // ============================================================
+
+  void _startUnreadMessageStream() {
+    _chatSubscription = _chatService
+        .getMessagesStream(widget.tripId, widget.userId)
+        .listen((messages) {
+      if (!mounted) return;
+      // Contar mensajes del conductor (no del pasajero)
+      final totalDriverMessages =
+          messages.where((m) => m.senderRole == 'conductor').length;
+      final unread = totalDriverMessages - _lastSeenDriverMessageCount;
+      if (unread != _unreadMessageCount) {
+        setState(() {
+          _unreadMessageCount = unread < 0 ? 0 : unread;
+        });
+      }
+    });
+  }
+
+  /// Resetear contador de mensajes no leídos (al abrir el chat)
+  void _markMessagesAsRead() {
+    // Al abrir el chat, marcamos todos los mensajes del conductor como leídos
+    _lastSeenDriverMessageCount += _unreadMessageCount;
+    setState(() => _unreadMessageCount = 0);
+  }
+
+  Widget _buildStaleLocationBanner() {
+    final color = _driverLocationCritical ? AppColors.error : AppColors.warning;
+    final text = _driverLocationCritical
+        ? 'Conductor sin conexión por varios minutos'
+        : 'La ubicación del conductor no se actualiza';
+
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 60,
+      left: 16,
+      right: 16,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.95),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.15),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Icon(
+              _driverLocationCritical
+                  ? Icons.wifi_off
+                  : Icons.signal_wifi_statusbar_connected_no_internet_4,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showDriverDisconnectedDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.wifi_off, color: AppColors.error),
+            SizedBox(width: 12),
+            Expanded(child: Text('Conductor sin conexión')),
+          ],
+        ),
+        content: const Text(
+          'No se ha recibido la ubicación del conductor por varios minutos. '
+          'Puede ser un problema de conexión temporal.\n\n'
+          'Si el problema persiste, puedes cancelar el viaje.',
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        actionsAlignment: MainAxisAlignment.center,
+        actionsPadding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.textSecondary,
+                    side: const BorderSide(color: AppColors.border),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text('Seguir esperando'),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _tripSubscription?.cancel();
+                    _waitCountdownTimer?.cancel();
+                    _staleLocationCheckTimer?.cancel();
+                    _cleanupRideRequest('cancelled');
+                    if (mounted) context.go('/home');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.error,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text('Cancelar viaje'),
                 ),
               ),
             ],
@@ -1099,6 +1588,7 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
       myLocationButtonEnabled: false,
       zoomControlsEnabled: false,
       mapToolbarEnabled: false,
+      padding: const EdgeInsets.only(bottom: 220),
     );
   }
 
@@ -1161,16 +1651,10 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
 
                 const Spacer(),
 
-                // Botón centrar en conductor
+                // Botón centrar en conductor + pickup
                 IconButton(
                   icon: const Icon(Icons.my_location, color: Colors.white),
-                  onPressed: () {
-                    if (_driverPosition != null) {
-                      _mapController?.animateCamera(
-                        CameraUpdate.newLatLngZoom(_driverPosition!, 16),
-                      );
-                    }
-                  },
+                  onPressed: _fitCameraToDriverAndPickup,
                 ),
               ],
             ),
@@ -1202,7 +1686,7 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
         child: SafeArea(
           top: false,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1218,18 +1702,23 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
 
                 const SizedBox(height: 16),
 
-                // Estado del viaje
-                _buildStatusSection(),
+                // ETA prominente
+                _buildEtaSection(),
 
                 const SizedBox(height: 16),
 
-                // Info del conductor
-                _buildDriverInfoSection(),
+                // Info conductor + vehículo
+                _buildDriverRow(),
 
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
 
-                // Info de destino
-                _buildDestinationInfo(),
+                // Destino (solo post-pickup)
+                if (_isPickedUp) ...[
+                  _buildDestinationRow(),
+                  const SizedBox(height: 8),
+                ],
+                // Botón de chat (siempre visible, pre y post-pickup)
+                _buildChatButton(),
               ],
             ),
           ),
@@ -1378,114 +1867,98 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     );
   }
 
-  Widget _buildStatusSection() {
-    String statusText;
-    IconData statusIcon;
-    Color statusColor;
+  Widget _buildEtaSection() {
+    final isNearby = _distanceToPassenger != null && _distanceToPassenger! < 50;
+    final isStalePrePickup = _driverLocationStale && !_driverArrivedAtPickup && !_isPickedUp;
 
-    if (_isPickedUp) {
-      statusText = 'En viaje hacia tu destino';
-      statusIcon = Icons.directions_car;
-      statusColor = AppColors.success;
-    } else if (_driverArrivedAtPickup) {
-      statusText = 'El conductor te espera';
-      statusIcon = Icons.hourglass_top;
-      statusColor = _waitTimerColor;
-    } else if (_distanceToPassenger != null && _distanceToPassenger! < 200) {
-      statusText = 'El conductor está cerca';
-      statusIcon = Icons.location_on;
-      statusColor = AppColors.warning;
-    } else {
-      statusText = 'En camino a recogerte';
-      statusIcon = Icons.navigation;
-      statusColor = AppColors.primary;
+    // Caso: conductor esperando en pickup
+    if (_driverArrivedAtPickup && !_isPickedUp) {
+      return Column(
+        children: [
+          Text(
+            'El conductor te espera',
+            style: AppTextStyles.body2.copyWith(color: AppColors.textSecondary),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _waitTimerText,
+            style: TextStyle(
+              fontSize: 36,
+              fontWeight: FontWeight.w800,
+              color: _waitTimerColor,
+            ),
+          ),
+        ],
+      );
     }
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: statusColor.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: statusColor.withOpacity(0.2)),
-      ),
-      child: Row(
+    // Caso: sin señal
+    if (isStalePrePickup) {
+      return Column(
         children: [
-          ScaleTransition(
-            scale: _pulseAnimation,
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: statusColor.withOpacity(0.15),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(statusIcon, color: statusColor, size: 24),
+          Text(
+            'Sin señal del conductor',
+            style: AppTextStyles.body2.copyWith(color: AppColors.warning),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '--',
+            style: TextStyle(
+              fontSize: 36,
+              fontWeight: FontWeight.w800,
+              color: AppColors.textSecondary,
             ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  statusText,
-                  style: AppTextStyles.body1.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: statusColor,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  _isPickedUp && _meterFare != null
-                      ? 'Taxímetro: \$${_meterFare!.toStringAsFixed(2)}'
-                      : _driverArrivedAtPickup
-                          ? 'Dirígete al punto de recogida'
-                          : 'ETA: $_etaText',
-                  style: AppTextStyles.caption.copyWith(
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-                if (_isPickedUp && _isNightTariff != null)
-                  Text(
-                    'Tarifa ${_isNightTariff! ? 'Nocturna 🌙' : 'Diurna ☀️'}',
-                    style: AppTextStyles.caption.copyWith(
-                      color: AppColors.textTertiary,
-                      fontSize: 10,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          if (_distanceToPassenger != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: statusColor.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                _distanceToPassenger! < 1000
-                    ? '${_distanceToPassenger!.round()} m'
-                    : '${(_distanceToPassenger! / 1000).toStringAsFixed(1)} km',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: statusColor,
-                ),
-              ),
-            ),
         ],
-      ),
+      );
+    }
+
+    // Caso normal: ETA + distancia (estilo Google Maps)
+    return Column(
+      children: [
+        Text(
+          _etaText,
+          style: TextStyle(
+            fontSize: 36,
+            fontWeight: FontWeight.w800,
+            color: isNearby ? AppColors.primary : AppColors.textPrimary,
+          ),
+        ),
+        if (_distanceText.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text(
+              _distanceText,
+              style: AppTextStyles.body2.copyWith(
+                color: AppColors.textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+      ],
     );
   }
 
-  Widget _buildDriverInfoSection() {
+  Widget _buildDriverRow() {
+    final driverName = _driverUser != null
+        ? '${_driverUser!.firstName} ${_driverUser!.lastName.isNotEmpty ? '${_driverUser!.lastName[0]}.' : ''}'
+        : 'Conductor';
+
+    // Subtítulo: siempre vehículo
+    String subtitle;
+    if (_driverVehicle != null) {
+      subtitle = '${_driverVehicle!.brand} ${_driverVehicle!.model} · ${_driverVehicle!.plate}';
+    } else {
+      subtitle = '';
+    }
+    const Color? subtitleColor = null;
+
     return Row(
       children: [
-        // Avatar del conductor
+        // Avatar del conductor (56x56)
         Container(
-          width: 48,
-          height: 48,
+          width: 56,
+          height: 56,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: AppColors.tertiary,
@@ -1495,6 +1968,8 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
             child: _driverUser?.profilePhotoUrl != null
                 ? Image.network(
                     _driverUser!.profilePhotoUrl!,
+                    width: 56,
+                    height: 56,
                     fit: BoxFit.cover,
                     errorBuilder: (_, __, ___) => _buildDriverPlaceholder(),
                   )
@@ -1503,65 +1978,67 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
         ),
         const SizedBox(width: 12),
 
-        // Nombre y vehículo
+        // Nombre, rating, vehículo
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                _driverUser != null
-                    ? '${_driverUser!.firstName} ${_driverUser!.lastName.isNotEmpty ? '${_driverUser!.lastName[0]}.' : ''}'
-                    : 'Conductor',
-                style: AppTextStyles.body1.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              if (_driverUser?.rating != null) ...[
-                const SizedBox(height: 2),
-                Row(
-                  children: [
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      driverName,
+                      style: AppTextStyles.body1.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (_driverUser != null) ...[
+                    const SizedBox(width: 8),
                     const Icon(Icons.star, size: 14, color: AppColors.warning),
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 2),
                     Text(
                       _driverUser!.rating.toStringAsFixed(1),
                       style: AppTextStyles.caption.copyWith(
-                        fontWeight: FontWeight.w500,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
+                ],
+              ),
+              if (subtitle.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  style: AppTextStyles.caption.copyWith(
+                    color: subtitleColor ?? AppColors.textSecondary,
+                    fontWeight: subtitleColor != null ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ],
           ),
         ),
 
-        // Tarifa del taxímetro (leída de Firestore, solo cuando está en viaje)
+        // Tarifa badge (solo en viaje)
         if (_meterFare != null && _isPickedUp)
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
               color: AppColors.success.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Column(
-              children: [
-                Text(
-                  '\$${_meterFare!.toStringAsFixed(2)}',
-                  style: AppTextStyles.body1.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.success,
-                    fontSize: 18,
-                  ),
-                ),
-                if (_meterDistanceKm != null)
-                  Text(
-                    '${_meterDistanceKm!.toStringAsFixed(1)} km',
-                    style: AppTextStyles.caption.copyWith(
-                      color: AppColors.textSecondary,
-                      fontSize: 10,
-                    ),
-                  ),
-              ],
+            child: Text(
+              '\$${_meterFare!.toStringAsFixed(2)}',
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                color: AppColors.success,
+                fontSize: 18,
+              ),
             ),
           ),
       ],
@@ -1586,95 +2063,88 @@ class _PassengerTrackingScreenState extends State<PassengerTrackingScreen>
     );
   }
 
-  Widget _buildDestinationInfo() {
+  Widget _buildChatButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () {
+                _markMessagesAsRead();
+                ChatBottomSheet.show(
+                  context,
+                  tripId: widget.tripId,
+                  passengerId: widget.userId,
+                  currentUserId: widget.userId,
+                  currentUserRole: 'pasajero',
+                  isActive: _passengerStatus == 'accepted',
+                  otherUserName: _driverUser != null
+                      ? '${_driverUser!.firstName} ${_driverUser!.lastName}'
+                      : 'Conductor',
+                );
+              },
+              icon: const Icon(Icons.chat_bubble_outline, size: 18),
+              label: const Text(
+                'Mensaje al conductor',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 0,
+              ),
+            ),
+          ),
+          // Badge de mensajes no leídos
+          if (_unreadMessageCount > 0)
+            Positioned(
+              top: -6,
+              right: -4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.error,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+                child: Center(
+                  child: Text(
+                    _unreadMessageCount > 9 ? '9+' : '$_unreadMessageCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDestinationRow() {
     return Row(
       children: [
-        // Pickup
+        const Icon(Icons.location_on, size: 18, color: AppColors.success),
+        const SizedBox(width: 8),
         Expanded(
-          child: Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: _isPickedUp
-                      ? AppColors.textSecondary
-                      : AppColors.primary,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _isPickedUp ? 'Recogido' : 'Recogida',
-                      style: AppTextStyles.caption.copyWith(
-                        color: AppColors.textSecondary,
-                        fontSize: 10,
-                      ),
-                    ),
-                    Text(
-                      widget.pickupPoint.name,
-                      style: AppTextStyles.caption.copyWith(
-                        fontWeight: FontWeight.w500,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 8),
-          child: Icon(
-            Icons.arrow_forward,
-            size: 14,
-            color: AppColors.textSecondary,
-          ),
-        ),
-
-        // Destino
-        Expanded(
-          child: Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: AppColors.success,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Destino',
-                      style: AppTextStyles.caption.copyWith(
-                        color: AppColors.textSecondary,
-                        fontSize: 10,
-                      ),
-                    ),
-                    Text(
-                      widget.destination.name,
-                      style: AppTextStyles.caption.copyWith(
-                        fontWeight: FontWeight.w500,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-            ],
+          child: Text(
+            widget.destination.name,
+            style: AppTextStyles.body2.copyWith(
+              color: AppColors.textSecondary,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],

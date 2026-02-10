@@ -100,6 +100,50 @@ class FirestoreService {
     }
   }
 
+  /// Aplicar strike por falta de pago a un usuario
+  ///
+  /// Strike 1 → ban 1 semana
+  /// Strike 2 → ban 2 semanas
+  /// Strike 3 → cuenta bloqueada permanentemente
+  Future<int> applyPaymentStrike(String userId) async {
+    try {
+      final doc = await _firestore.collection(_usersCollection).doc(userId).get();
+      if (!doc.exists) throw Exception('Usuario no encontrado');
+
+      final data = doc.data()!;
+      final currentStrikes = data['paymentStrikes'] as int? ?? 0;
+      final newStrikes = currentStrikes + 1;
+
+      final Map<String, dynamic> updates = {
+        'paymentStrikes': newStrikes,
+        'updatedAt': Timestamp.now(),
+      };
+
+      if (newStrikes >= 3) {
+        // Bloqueo permanente
+        updates['accountBlocked'] = true;
+        updates['bannedUntil'] = null;
+      } else if (newStrikes == 2) {
+        // Ban 2 semanas
+        updates['bannedUntil'] = Timestamp.fromDate(
+          DateTime.now().add(const Duration(days: 14)),
+        );
+      } else {
+        // Ban 1 semana
+        updates['bannedUntil'] = Timestamp.fromDate(
+          DateTime.now().add(const Duration(days: 7)),
+        );
+      }
+
+      await _firestore.collection(_usersCollection).doc(userId).update(updates);
+      return newStrikes;
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      throw Exception('Error al aplicar strike: $e');
+    }
+  }
+
   /// Obtener vehículo del usuario
   ///
   /// Busca vehículo donde ownerId == userId
@@ -242,6 +286,42 @@ class FirestoreService {
       throw _handleFirestoreError(e);
     } catch (e) {
       throw Exception('Error al obtener usuarios: $e');
+    }
+  }
+
+  /// Guardar/actualizar FCM token para push notifications
+  ///
+  /// Se llama al iniciar la app y cuando el token se refresca
+  Future<void> updateFcmToken(String userId, String? fcmToken) async {
+    try {
+      await _firestore
+          .collection(_usersCollection)
+          .doc(userId)
+          .update({
+        'fcmToken': fcmToken,
+        'updatedAt': Timestamp.now(),
+      });
+    } on FirebaseException catch (e) {
+      throw _handleFirestoreError(e);
+    } catch (e) {
+      throw Exception('Error al actualizar FCM token: $e');
+    }
+  }
+
+  /// Limpiar FCM token al cerrar sesión
+  ///
+  /// Evita que notificaciones lleguen después de logout
+  Future<void> clearFcmToken(String userId) async {
+    try {
+      await _firestore
+          .collection(_usersCollection)
+          .doc(userId)
+          .update({
+        'fcmToken': null,
+        'updatedAt': Timestamp.now(),
+      });
+    } catch (e) {
+      // No bloquear logout si falla
     }
   }
 

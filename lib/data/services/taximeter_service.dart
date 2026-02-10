@@ -19,6 +19,11 @@ class TaximeterSession {
   double currentFare;
   String breakdown;
 
+  /// Campos de descuento grupal
+  int groupSize;              // Número actual de pasajeros en el carro
+  double discountPercent;     // % descuento aplicado (0.08, 0.16, etc.)
+  double fareBeforeDiscount;  // Tarifa sin descuento (para mostrar en UI)
+
   double _lastLat;
   double _lastLng;
   DateTime _lastUpdateTime;
@@ -30,11 +35,16 @@ class TaximeterSession {
     required this.startLat,
     required this.startLng,
     required this.isNightTariff,
+    this.groupSize = 1,
   })  : totalDistanceKm = 0.0,
         totalWaitMinutes = 0.0,
         currentFare = isNightTariff
             ? PricingService.nightStartFare
             : PricingService.dayStartFare,
+        fareBeforeDiscount = isNightTariff
+            ? PricingService.nightStartFare
+            : PricingService.dayStartFare,
+        discountPercent = PricingService.getGroupDiscountPercent(1),
         breakdown = '',
         _lastLat = startLat,
         _lastLng = startLng,
@@ -93,15 +103,25 @@ class TaximeterSession {
     _recalculateFare();
   }
 
-  /// Recalcular la tarifa actual con PricingService
+  /// Recalcular la tarifa actual con PricingService + descuento grupal
   void _recalculateFare() {
     final result = PricingService().calculateLiveFare(
       distanceKm: totalDistanceKm,
       waitMinutes: totalWaitMinutes,
       isNightRate: isNightTariff,
     );
-    currentFare = result.price;
+    fareBeforeDiscount = result.price;
+    discountPercent = PricingService.getGroupDiscountPercent(groupSize);
+    currentFare = PricingService.applyGroupDiscount(result.price, groupSize);
     breakdown = result.breakdown;
+  }
+
+  /// Actualizar el tamaño del grupo (recalcula descuento)
+  void updateGroupSize(int newSize) {
+    if (newSize != groupSize) {
+      groupSize = newSize;
+      _recalculateFare();
+    }
   }
 
   /// Distancia Haversine entre dos puntos en km
@@ -136,6 +156,7 @@ class TaximeterService {
     required String passengerId,
     required double lat,
     required double lng,
+    int groupSize = 1,
   }) {
     final isNight = PricingService().isNightTime();
     final session = TaximeterSession(
@@ -144,6 +165,7 @@ class TaximeterService {
       startLat: lat,
       startLng: lng,
       isNightTariff: isNight,
+      groupSize: groupSize,
     );
     _sessions[passengerId] = session;
     return session;
@@ -162,6 +184,7 @@ class TaximeterService {
     double fare = 0,
     required double currentLat,
     required double currentLng,
+    int groupSize = 1,
   }) {
     final session = TaximeterSession(
       passengerId: passengerId,
@@ -169,6 +192,7 @@ class TaximeterService {
       startLat: startLat,
       startLng: startLng,
       isNightTariff: isNightTariff,
+      groupSize: groupSize,
     );
     // Restaurar acumulados
     session.totalDistanceKm = distanceKm;
@@ -180,11 +204,14 @@ class TaximeterService {
 
   /// Procesar actualización GPS para TODAS las sesiones activas
   ///
+  /// [groupSize] = número de pasajeros picked_up (para descuento grupal)
   /// Retorna mapa de passengerId → sesión actualizada
   Map<String, TaximeterSession> onGpsUpdate(
-    double lat, double lng, DateTime timestamp,
-  ) {
+    double lat, double lng, DateTime timestamp, {
+    int groupSize = 1,
+  }) {
     for (final session in _sessions.values) {
+      session.updateGroupSize(groupSize);
       session.processGpsUpdate(lat, lng, timestamp);
     }
     return Map.unmodifiable(_sessions);
