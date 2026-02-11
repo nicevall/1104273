@@ -30,9 +30,11 @@ void main() async {
 
   // Inicializar App Check con Debug provider para desarrollo
   // Para producción, cambiar a AndroidProvider.playIntegrity
+  /* 
   await FirebaseAppCheck.instance.activate(
     androidProvider: AndroidProvider.debug,
   );
+  */
 
   // Configurar idioma de Firebase Auth para emails
   await FirebaseAuth.instance.setLanguageCode('es');

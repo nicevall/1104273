@@ -239,6 +239,7 @@ export const onUserCreated = functions.firestore
     return null;
   });
 
+
 export const onUserUpdated = functions.firestore
   .document('users/{userId}')
   .onUpdate(async (change, context) => {
@@ -250,3 +251,9 @@ export const onUserUpdated = functions.firestore
     }
     return null;
   });
+
+// ============================================================================
+// OCR - GOOGLE CLOUD VISION
+// ============================================================================
+export { analyzeDocument } from './document_analysis';
+

@@ -1,14 +1,14 @@
 /// Modelo de datos extraídos de Licencia de Conducir (ANT Ecuador)
 /// Campos extraídos mediante OCR de documento oficial
 class LicenseData {
-  final String? numeroLicencia;    // 10 dígitos (cédula)
-  final String? apellidos;          // APELLIDO/FAMILY NAME
-  final String? nombres;            // NOMBRE/NAME
-  final String? sexo;               // M o F
-  final String? fechaNacimiento;    // DD-MM-YYYY
-  final String? fechaVencimiento;   // DD-MM-YYYY (CRÍTICO para validación)
-  final String? categoria;          // A, B, C, C1, D, E, etc.
-  final String? tipoSangre;         // O+, O-, A+, A-, B+, B-, AB+, AB-
+  final String? numeroLicencia; // 10 dígitos (cédula)
+  final String? apellidos; // APELLIDO/FAMILY NAME
+  final String? nombres; // NOMBRE/NAME
+  final String? sexo; // M o F
+  final String? fechaNacimiento; // DD-MM-YYYY
+  final String? fechaVencimiento; // DD-MM-YYYY (CRÍTICO para validación)
+  final String? categoria; // A, B, C, C1, D, E, etc.
+  final String? tipoSangre; // O+, O-, A+, A-, B+, B-, AB+, AB-
 
   const LicenseData({
     this.numeroLicencia,
@@ -52,8 +52,8 @@ class LicenseData {
   /// Verificar si tiene los campos mínimos requeridos
   bool get hasMinimumFields {
     return numeroLicencia != null &&
-           numeroLicencia!.length == 10 &&
-           categoria != null;
+        numeroLicencia!.length == 10 &&
+        categoria != null;
   }
 
   // TODO: Implementar validación de licencia vencida
@@ -77,6 +77,6 @@ class LicenseData {
 
   @override
   String toString() {
-    return 'LicenseData(numero: $numeroLicencia, nombre: $nombres $apellidos, cat: $categoria)';
+    return 'LicenseData(numero: $numeroLicencia, nombres: $nombres, apellidos: $apellidos, cat: $categoria)';
   }
 }

@@ -14,6 +14,7 @@ import '../../presentation/screens/auth/registration_status_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_questions_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_matricula_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_license_screen.dart';
+import '../../presentation/screens/vehicle/vehicle_license_back_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_photo_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_summary_screen.dart';
 import '../../presentation/screens/home/main_navigation_screen.dart';
@@ -156,7 +157,7 @@ final GoRouter appRouter = GoRouter(
       },
     ),
 
-    // Vehicle License (Step 3)
+    // Vehicle License (Step 3 - Front)
     GoRoute(
       path: '/register/vehicle/license',
       name: 'register-vehicle-license',
@@ -169,6 +170,26 @@ final GoRouter appRouter = GoRouter(
           driverRelation: extra?['driverRelation'] as String? ?? '',
           matriculaPhotoPath: extra?['matriculaPhoto'] as String? ?? '',
           vehicleData: (extra?['vehicleData'] as Map<String, String>?) ?? {},
+        );
+      },
+    ),
+
+    // Vehicle License (Step 3.5 - Back)
+    GoRoute(
+      path: '/register/vehicle/license/back',
+      name: 'register-vehicle-license-back',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return VehicleLicenseBackScreen(
+          userId: extra?['userId'] as String? ?? '',
+          role: extra?['role'] as String? ?? 'conductor',
+          vehicleOwnership: extra?['vehicleOwnership'] as String? ?? '',
+          driverRelation: extra?['driverRelation'] as String? ?? '',
+          matriculaPhotoPath: extra?['matriculaPhoto'] as String? ?? '',
+          vehicleData: (extra?['vehicleData'] as Map<String, String>?) ?? {},
+          licenseFrontPhotoPath: extra?['licenseFrontPhoto'] as String? ?? '',
+          licenseFrontData:
+              (extra?['licenseFrontData'] as Map<String, dynamic>?) ?? {},
         );
       },
     ),
@@ -281,7 +302,8 @@ final GoRouter appRouter = GoRouter(
         return PlanTripScreen(
           userId: extra?['userId'] as String? ?? '',
           userRole: extra?['userRole'] as String? ?? 'pasajero',
-          preselectedDestination: extra?['destination'] as Map<String, dynamic>?,
+          preselectedDestination:
+              extra?['destination'] as Map<String, dynamic>?,
         );
       },
     ),
@@ -343,7 +365,8 @@ final GoRouter appRouter = GoRouter(
           origin: extra?['origin'] as Map<String, dynamic>? ?? {},
           destination: extra?['destination'] as Map<String, dynamic>? ?? {},
           preference: extra?['preference'] as String? ?? 'mochila',
-          preferenceDescription: extra?['preferenceDescription'] as String? ?? '',
+          preferenceDescription:
+              extra?['preferenceDescription'] as String? ?? '',
           paymentMethod: extra?['paymentMethod'] as String? ?? 'Efectivo',
         );
       },
@@ -360,9 +383,11 @@ final GoRouter appRouter = GoRouter(
           userRole: extra?['userRole'] as String? ?? 'pasajero',
           origin: extra?['origin'] as Map<String, dynamic>? ?? {},
           destination: extra?['destination'] as Map<String, dynamic>? ?? {},
-          pickupLocation: extra?['pickupLocation'] as Map<String, dynamic>? ?? {},
+          pickupLocation:
+              extra?['pickupLocation'] as Map<String, dynamic>? ?? {},
           preference: extra?['preference'] as String? ?? 'mochila',
-          preferenceDescription: extra?['preferenceDescription'] as String? ?? '',
+          preferenceDescription:
+              extra?['preferenceDescription'] as String? ?? '',
           paymentMethod: extra?['paymentMethod'] as String? ?? 'Efectivo',
         );
       },

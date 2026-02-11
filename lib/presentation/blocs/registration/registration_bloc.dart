@@ -101,15 +101,16 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
 
           // Verificar si ya validó el email para saltar al paso correcto
           if (user.emailVerified) {
-             emit(RegistrationStep3(userId: user.uid));
+            emit(RegistrationStep3(userId: user.uid));
           } else {
-             emit(RegistrationStep2(userId: user.uid, email: event.email));
+            emit(RegistrationStep2(userId: user.uid, email: event.email));
           }
           return;
         } catch (loginError) {
           // Si falla el login (ej. contraseña incorrecta), mostrar mensaje orientativo
           emit(const RegistrationFailure(
-            error: 'Este correo ya está registrado. Si es tu cuenta, inicia sesión para continuar con el registro.',
+            error:
+                'Este correo ya está registrado. Si es tu cuenta, inicia sesión para continuar con el registro.',
             step: 1,
           ));
           return;
@@ -287,23 +288,16 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
       // Esto evita errores de "unauthenticated" si el proceso de registro fue largo
       await _authService.refreshToken();
 
-      // 1. Subir foto del vehículo
+      // 1. Subir foto del vehículo (PÚBLICA - SE MANTIENE)
       final vehiclePhotoUrl = await _storageService.uploadVehiclePhoto(
         userId: userId,
         imageFile: event.vehiclePhoto,
       );
 
-      // 2. Subir foto de licencia
-      final licensePhotoUrl = await _storageService.uploadLicensePhoto(
-        userId: userId,
-        imageFile: event.licensePhoto,
-      );
-
-      // 3. Subir foto de matrícula
-      final registrationPhotoUrl = await _storageService.uploadRegistrationPhoto(
-        userId: userId,
-        imageFile: event.registrationPhoto,
-      );
+      // 2. OMITIR SUBIDA DE FOTOS SENSIBLES (Licencia y Matrícula)
+      // Por privacidad, no guardamos estas imágenes en Storage, solo sus datos extraídos.
+      final licensePhotoUrl = null;
+      final registrationPhotoUrl = null;
 
       // 4. Completar registro con TODOS los datos extraídos por OCR
       await _authService.completeRegistration(
@@ -323,10 +317,10 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
           'vinChasis': event.vinChasis,
           'claseVehiculo': event.claseVehiculo,
           'pasajeros': event.pasajeros,
-          // URLs de fotos (para verificación manual)
+          // URLs de fotos
           'photoUrl': vehiclePhotoUrl,
-          'licensePhotoUrl': licensePhotoUrl,
-          'registrationPhotoUrl': registrationPhotoUrl,
+          'licensePhotoUrl': licensePhotoUrl, // Será null
+          'registrationPhotoUrl': registrationPhotoUrl, // Será null
           // Datos de licencia extraídos
           'licenseNumber': event.licenseNumber,
           'licenseHolderName': event.licenseHolderName,

@@ -1,9 +1,10 @@
 import 'dart:io';
-import 'dart:math';
+import 'dart:convert'; // Para base64Encode, jsonEncode
 import 'package:flutter/foundation.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:image/image.dart' as img;
+import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../models/license_data.dart';
+
 import '../models/vehicle_data.dart';
 
 /// Resultado de la verificación de documento
@@ -42,744 +43,746 @@ class DocumentVerificationResult {
 
 /// Tipo de documento a verificar
 enum DocumentType {
-  license,      // Licencia de conducir
+  license, // Licencia de conducir (Frente)
+  licenseBack, // Licencia de conducir (Reverso)
   registration, // Matrícula vehicular
-  vehicle,      // Foto del vehículo (sin OCR, solo anti-spoofing)
+  vehicle, // Foto del vehículo (sin OCR, solo anti-spoofing)
 }
 
 /// Servicio de verificación de documentos usando ML Kit
 /// Implementa OCR y detección básica de anti-spoofing
 /// Especializado en documentos ANT Ecuador
 class DocumentVerificationService {
-  final TextRecognizer _textRecognizer = TextRecognizer(
-    script: TextRecognitionScript.latin,
-  );
+  // URL base de la API de Vision
+  static const _baseUrl = 'https://vision.googleapis.com/v1/images:annotate';
 
-  // Palabras clave para licencia de conducir ecuatoriana
-  static const List<String> _licenseKeywords = [
-    'licencia',
-    'conducir',
-    'ant',
-    'tipo',
-    'categoria',
-    'ecuador',
-    'cedula',
-    'nombre',
-    'apellido',
-    'fecha',
-    'nacimiento',
-    'expedicion',
-    'caducidad',
-    'vigencia',
-    'conducción',
-    'transito',
-    'agencia nacional',
-    'driver',
-    'license',
-    'republic',
-  ];
+  // Obtener API Key de variables de entorno
+  String get _apiKey => dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
 
-  // Palabras clave para matrícula vehicular ecuatoriana
-  static const List<String> _registrationKeywords = [
-    'matricula',
-    'placa',
-    'vehiculo',
-    'marca',
-    'modelo',
-    'ano',
-    'año',
-    'color',
-    'motor',
-    'chasis',
-    'cilindraje',
-    'propietario',
-    'ecuador',
-    'ant',
-    'revision',
-    'técnica',
-    'servicio',
-    'vin',
-    'clase',
-    'pasajeros',
-  ];
-
-  // Marcas de vehículos conocidas
-  static const List<String> _knownBrands = [
-    'chevrolet', 'toyota', 'nissan', 'hyundai', 'kia', 'mazda', 'ford',
-    'honda', 'volkswagen', 'suzuki', 'renault', 'peugeot', 'mitsubishi',
-    'great wall', 'jac', 'chery', 'byd', 'fiat', 'jeep', 'dodge', 'ram',
-    'subaru', 'volvo', 'bmw', 'mercedes', 'audi', 'lexus', 'infiniti',
-    'land rover', 'mini', 'porsche', 'ferrari', 'hino', 'isuzu', 'dfsk',
-    'changhe', 'zotye', 'haval', 'mg', 'geely', 'changan', 'foton',
-  ];
-
-  // Colores conocidos
-  static const Map<String, String> _knownColors = {
-    'blanco': 'BLANCO',
-    'negro': 'NEGRO',
-    'gris': 'GRIS',
-    'plata': 'PLATEADO',
-    'plateado': 'PLATEADO',
-    'rojo': 'ROJO',
-    'azul': 'AZUL',
-    'verde': 'VERDE',
-    'amarillo': 'AMARILLO',
-    'naranja': 'NARANJA',
-    'cafe': 'CAFÉ',
-    'café': 'CAFÉ',
-    'beige': 'BEIGE',
-    'dorado': 'DORADO',
-    'vino': 'VINO',
-    'morado': 'MORADO',
-    'celeste': 'CELESTE',
-    'crema': 'CREMA',
-  };
-
-  // Clases de vehículos
-  static const List<String> _vehicleClasses = [
-    'automovil', 'camioneta', 'motocicleta', 'jeep', 'furgoneta',
-    'bus', 'camion', 'camión', 'suv', 'sedan', 'hatchback', 'pickup',
-  ];
-
-  // Tipos de sangre válidos
-  static const List<String> _bloodTypes = [
-    'O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-',
-    'O RH+', 'O RH-', 'A RH+', 'A RH-', 'B RH+', 'B RH-',
-  ];
-
-  /// Verificar un documento
-  /// Retorna un resultado con información sobre la validez
+  /// Verificar un documento llamando directamente a Google Cloud Vision API
   Future<DocumentVerificationResult> verifyDocument({
     required File imageFile,
     required DocumentType documentType,
   }) async {
     try {
-      // Para fotos de vehículo, solo verificar anti-spoofing
-      if (documentType == DocumentType.vehicle) {
-        final isSpoofed = await _detectScreenPhoto(imageFile);
-        return DocumentVerificationResult(
-          isValid: !isSpoofed,
-          hasText: false,
-          isPotentialScreenPhoto: isSpoofed,
-          confidenceScore: isSpoofed ? 0.3 : 0.9,
-          errorMessage: isSpoofed
-              ? 'La imagen parece ser una foto de otra pantalla. Por favor, toma una foto directa del vehículo.'
-              : null,
-        );
-      }
-
-      // Para documentos, verificar OCR y anti-spoofing
-      final inputImage = InputImage.fromFile(imageFile);
-      final recognizedText = await _textRecognizer.processImage(inputImage);
-
-      final extractedText = recognizedText.text;
-      final textLower = extractedText.toLowerCase();
-      final hasText = extractedText.isNotEmpty && extractedText.length > 20;
-
-      if (!hasText) {
+      debugPrint('--- INICIANDO VERIFICACIÓN DE DOCUMENTO: $documentType ---');
+      if (_apiKey.isEmpty) {
         return DocumentVerificationResult.invalid(
-          'No se detectó texto en la imagen. Asegúrate de que el documento sea legible y esté bien iluminado.',
+          'Falta configurar la API Key de Google Cloud.',
         );
       }
 
-      // Verificar palabras clave según tipo de documento
-      final keywords = documentType == DocumentType.license
-          ? _licenseKeywords
-          : _registrationKeywords;
-
-      final detectedKeywords = <String>[];
-      for (final keyword in keywords) {
-        if (textLower.contains(keyword)) {
-          detectedKeywords.add(keyword);
-        }
-      }
-
-      // Calcular score de confianza basado en palabras clave detectadas
-      final keywordScore = detectedKeywords.length / keywords.length;
-
-      // Verificar anti-spoofing
-      final isPotentialScreenPhoto = await _detectScreenPhoto(imageFile);
-
-      // El documento es válido si:
-      // 1. Tiene suficientes palabras clave (al menos 3)
-      // 2. No parece ser una foto de pantalla
-      final isValid = detectedKeywords.length >= 3 && !isPotentialScreenPhoto;
-
-      // Calcular confianza final
-      double confidenceScore = keywordScore * 0.7;
-      if (!isPotentialScreenPhoto) {
-        confidenceScore += 0.3;
-      }
-
-      String? errorMessage;
-      if (isPotentialScreenPhoto) {
-        errorMessage = 'La imagen parece ser una foto de otra pantalla. Por favor, toma una foto directa del documento físico.';
-      } else if (detectedKeywords.length < 3) {
-        final docName = documentType == DocumentType.license
-            ? 'licencia de conducir'
-            : 'matrícula vehicular';
-        errorMessage = 'No se detectaron suficientes características de una $docName válida. Asegúrate de fotografiar el documento correcto.';
-      }
-
-      // Extraer datos específicos según tipo de documento
-      LicenseData? licenseData;
-      VehicleData? vehicleData;
-
-      if (isValid) {
-        if (documentType == DocumentType.license) {
-          licenseData = _extractLicenseData(extractedText);
-        } else if (documentType == DocumentType.registration) {
-          vehicleData = _extractVehicleData(extractedText);
-        }
-      }
-
-      return DocumentVerificationResult(
-        isValid: isValid,
-        hasText: hasText,
-        isPotentialScreenPhoto: isPotentialScreenPhoto,
-        extractedText: extractedText,
-        detectedKeywords: detectedKeywords,
-        errorMessage: errorMessage,
-        confidenceScore: confidenceScore.clamp(0.0, 1.0),
-        licenseData: licenseData,
-        vehicleData: vehicleData,
-      );
-    } catch (e) {
-      debugPrint('Error en verificación de documento: $e');
-      return DocumentVerificationResult.invalid(
-        'Error al procesar la imagen. Por favor, intenta de nuevo.',
-      );
-    }
-  }
-
-  /// Extraer datos de Licencia de Conducir ANT Ecuador
-  LicenseData _extractLicenseData(String text) {
-    final textUpper = text.toUpperCase();
-    final textClean = text.replaceAll('\n', ' ').replaceAll('  ', ' ');
-
-    // Extraer número de licencia (10 dígitos - cédula ecuatoriana)
-    String? numeroLicencia;
-    final licenseRegex = RegExp(r'\b\d{10}\b');
-    final licenseMatch = licenseRegex.firstMatch(text);
-    if (licenseMatch != null) {
-      numeroLicencia = licenseMatch.group(0);
-    }
-
-    // Extraer apellidos (después de APELLIDO/FAMILY NAME/APELLIDOS)
-    String? apellidos;
-    final apellidoPatterns = [
-      RegExp(r'APELLIDOS?\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ\s]+)', caseSensitive: false),
-      RegExp(r'FAMILY\s*NAME\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ\s]+)', caseSensitive: false),
-    ];
-    for (final pattern in apellidoPatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null && match.group(1) != null) {
-        apellidos = match.group(1)!.trim();
-        // Limpiar y tomar solo las primeras palabras en mayúscula
-        apellidos = _cleanName(apellidos);
-        if (apellidos.isNotEmpty) break;
-      }
-    }
-
-    // Extraer nombres (después de NOMBRE/NAME/NOMBRES)
-    String? nombres;
-    final nombrePatterns = [
-      RegExp(r'NOMBRES?\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ\s]+)', caseSensitive: false),
-      RegExp(r'\bNAME\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ\s]+)', caseSensitive: false),
-    ];
-    for (final pattern in nombrePatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null && match.group(1) != null) {
-        nombres = match.group(1)!.trim();
-        nombres = _cleanName(nombres);
-        if (nombres.isNotEmpty) break;
-      }
-    }
-
-    // Extraer sexo (M o F)
-    String? sexo;
-    final sexoPatterns = [
-      RegExp(r'SEXO\s*[:\-]?\s*([MF])\b', caseSensitive: false),
-      RegExp(r'SEX\s*[:\-]?\s*([MF])\b', caseSensitive: false),
-      RegExp(r'\b([MF])\s*(MASCULINO|FEMENINO|MALE|FEMALE)', caseSensitive: false),
-    ];
-    for (final pattern in sexoPatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null && match.group(1) != null) {
-        sexo = match.group(1)!.toUpperCase();
-        break;
-      }
-    }
-
-    // Extraer fecha de nacimiento
-    String? fechaNacimiento;
-    final fechaNacPatterns = [
-      RegExp(r'NACIMIENTO\s*[:\-]?\s*(\d{1,2}[\-/]\d{1,2}[\-/]\d{4})', caseSensitive: false),
-      RegExp(r'DOB\s*[:\-]?\s*(\d{1,2}[\-/]\d{1,2}[\-/]\d{4})', caseSensitive: false),
-      RegExp(r'BIRTH\s*[:\-]?\s*(\d{1,2}[\-/]\d{1,2}[\-/]\d{4})', caseSensitive: false),
-    ];
-    for (final pattern in fechaNacPatterns) {
-      final match = pattern.firstMatch(text);
-      if (match != null && match.group(1) != null) {
-        fechaNacimiento = _normalizeDate(match.group(1)!);
-        break;
-      }
-    }
-
-    // Extraer fecha de vencimiento (CRÍTICO)
-    String? fechaVencimiento;
-    final fechaVencPatterns = [
-      RegExp(r'VENCIMIENTO\s*[:\-]?\s*(\d{1,2}[\-/]\d{1,2}[\-/]\d{4})', caseSensitive: false),
-      RegExp(r'CADUCIDAD\s*[:\-]?\s*(\d{1,2}[\-/]\d{1,2}[\-/]\d{4})', caseSensitive: false),
-      RegExp(r'EXP(?:IRY|IRATION)?\s*[:\-]?\s*(\d{1,2}[\-/]\d{1,2}[\-/]\d{4})', caseSensitive: false),
-      RegExp(r'VIGENCIA\s*[:\-]?\s*(\d{1,2}[\-/]\d{1,2}[\-/]\d{4})', caseSensitive: false),
-    ];
-    for (final pattern in fechaVencPatterns) {
-      final match = pattern.firstMatch(text);
-      if (match != null && match.group(1) != null) {
-        fechaVencimiento = _normalizeDate(match.group(1)!);
-        break;
-      }
-    }
-
-    // Extraer categoría (A, B, C, C1, D, E, etc.)
-    String? categoria;
-    final categoriaPatterns = [
-      RegExp(r'CATEGOR[IÍ]A\s*[:\-]?\s*([A-E][1-2]?\s*)+', caseSensitive: false),
-      RegExp(r'CATEGORY\s*[:\-]?\s*([A-E][1-2]?\s*)+', caseSensitive: false),
-      RegExp(r'TIPO\s*[:\-]?\s*([A-E][1-2]?\s*)+', caseSensitive: false),
-      RegExp(r'\b((?:[ABCDE][1-2]?\s*)+)\s*(?:NO\s*PROFESIONAL|PROFESIONAL)?', caseSensitive: false),
-    ];
-    for (final pattern in categoriaPatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null && match.group(1) != null) {
-        categoria = match.group(1)!.trim().replaceAll(RegExp(r'\s+'), ' ');
-        if (categoria.isNotEmpty) break;
-      }
-    }
-
-    // Extraer tipo de sangre
-    String? tipoSangre;
-    for (final bt in _bloodTypes) {
-      if (textUpper.contains(bt.replaceAll(' ', ''))) {
-        tipoSangre = bt.replaceAll(' RH', '');
-        break;
-      }
-    }
-    // Buscar patrón alternativo
-    if (tipoSangre == null) {
-      final btPattern = RegExp(r'\b(AB?|O)\s*RH?\s*([+-])', caseSensitive: false);
-      final btMatch = btPattern.firstMatch(textUpper);
-      if (btMatch != null) {
-        tipoSangre = '${btMatch.group(1)}${btMatch.group(2)}';
-      }
-    }
-
-    return LicenseData(
-      numeroLicencia: numeroLicencia,
-      apellidos: apellidos,
-      nombres: nombres,
-      sexo: sexo,
-      fechaNacimiento: fechaNacimiento,
-      fechaVencimiento: fechaVencimiento,
-      categoria: categoria,
-      tipoSangre: tipoSangre,
-    );
-  }
-
-  /// Extraer datos de Matrícula Vehicular ANT Ecuador
-  VehicleData _extractVehicleData(String text) {
-    final textUpper = text.toUpperCase();
-    final textLower = text.toLowerCase();
-
-    // Extraer placa (formato ecuatoriano: ABC-1234 o ABC1234)
-    String? placa;
-    final placaRegex = RegExp(r'\b([A-Z]{3})[\s\-]?(\d{3,4})\b', caseSensitive: false);
-    final placaMatch = placaRegex.firstMatch(textUpper);
-    if (placaMatch != null) {
-      placa = '${placaMatch.group(1)}${placaMatch.group(2)}';
-    }
-
-    // Extraer marca
-    String? marca;
-    for (final brand in _knownBrands) {
-      if (textLower.contains(brand)) {
-        marca = brand.toUpperCase();
-        // Capitalizar primera letra
-        marca = marca[0] + marca.substring(1).toLowerCase();
-        // Casos especiales
-        if (brand == 'great wall') marca = 'Great Wall';
-        if (brand == 'land rover') marca = 'Land Rover';
-        break;
-      }
-    }
-    // Buscar después de la palabra MARCA
-    if (marca == null) {
-      final marcaPattern = RegExp(r'MARCA\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ\s]+)', caseSensitive: false);
-      final marcaMatch = marcaPattern.firstMatch(textUpper);
-      if (marcaMatch != null) {
-        marca = marcaMatch.group(1)!.trim().split(RegExp(r'\s+'))[0];
-      }
-    }
-
-    // Extraer modelo (después de MODELO)
-    String? modelo;
-    final modeloPatterns = [
-      RegExp(r'MODELO\s*[:\-]?\s*([A-Z0-9\s\.\-]+)', caseSensitive: false),
-    ];
-    for (final pattern in modeloPatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null && match.group(1) != null) {
-        modelo = match.group(1)!.trim();
-        // Limpiar modelo - tomar hasta la siguiente palabra clave
-        final endIndex = modelo.indexOf(RegExp(r'\b(AÑO|COLOR|CLASE|MOTOR|CHASIS)\b'));
-        if (endIndex > 0) {
-          modelo = modelo.substring(0, endIndex).trim();
-        }
-        if (modelo.isNotEmpty) break;
-      }
-    }
-
-    // Extraer año
-    String? anio;
-    final anioPatterns = [
-      RegExp(r'A[ÑN]O\s*[:\-]?\s*(19\d{2}|20[0-2]\d)', caseSensitive: false),
-      RegExp(r'YEAR\s*[:\-]?\s*(19\d{2}|20[0-2]\d)', caseSensitive: false),
-      RegExp(r'\b(19\d{2}|20[0-2]\d)\b'),
-    ];
-    for (final pattern in anioPatterns) {
-      final match = pattern.firstMatch(text);
-      if (match != null) {
-        final year = match.group(1) ?? match.group(0);
-        final yearInt = int.tryParse(year ?? '');
-        if (yearInt != null && yearInt >= 1990 && yearInt <= 2026) {
-          anio = year;
-          break;
-        }
-      }
-    }
-
-    // Extraer color
-    String? color;
-    // Primero buscar después de COLOR o COLOR 1
-    final colorPatterns = [
-      RegExp(r'COLOR\s*1?\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ]+)', caseSensitive: false),
-    ];
-    for (final pattern in colorPatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null && match.group(1) != null) {
-        final colorCandidate = match.group(1)!.toLowerCase();
-        if (_knownColors.containsKey(colorCandidate)) {
-          color = _knownColors[colorCandidate];
-          break;
-        }
-      }
-    }
-    // Si no encontró, buscar cualquier color conocido
-    if (color == null) {
-      for (final entry in _knownColors.entries) {
-        if (textLower.contains(entry.key)) {
-          color = entry.value;
-          break;
-        }
-      }
-    }
-
-    // Extraer VIN/Chasis (17 caracteres alfanuméricos)
-    String? vinChasis;
-    final vinPatterns = [
-      RegExp(r'(?:VIN|CHASIS|CHASSIS)\s*[:\-]?\s*([A-Z0-9]{17})\b', caseSensitive: false),
-      RegExp(r'\b([A-HJ-NPR-Z0-9]{17})\b'), // VIN no incluye I, O, Q
-    ];
-    for (final pattern in vinPatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null) {
-        final vin = match.group(1);
-        if (vin != null && vin.length == 17) {
-          vinChasis = vin;
-          break;
-        }
-      }
-    }
-
-    // Extraer clase de vehículo
-    String? claseVehiculo;
-    final clasePatterns = [
-      RegExp(r'CLASE\s*[:\-]?\s*([A-ZÁÉÍÓÚÑ]+)', caseSensitive: false),
-    ];
-    for (final pattern in clasePatterns) {
-      final match = pattern.firstMatch(textUpper);
-      if (match != null && match.group(1) != null) {
-        claseVehiculo = match.group(1)!.trim();
-        break;
-      }
-    }
-    // Buscar clases conocidas
-    if (claseVehiculo == null) {
-      for (final vc in _vehicleClasses) {
-        if (textLower.contains(vc)) {
-          claseVehiculo = vc.toUpperCase();
-          break;
-        }
-      }
-    }
-
-    // Extraer número de pasajeros
-    String? pasajeros;
-    final pasajerosPatterns = [
-      RegExp(r'PASAJEROS?\s*[:\-]?\s*(\d+)', caseSensitive: false),
-      RegExp(r'CAPACIDAD\s*[:\-]?\s*(\d+)', caseSensitive: false),
-    ];
-    for (final pattern in pasajerosPatterns) {
-      final match = pattern.firstMatch(text);
-      if (match != null && match.group(1) != null) {
-        pasajeros = match.group(1);
-        break;
-      }
-    }
-
-    return VehicleData(
-      placa: placa,
-      marca: marca,
-      modelo: modelo,
-      anio: anio,
-      color: color,
-      vinChasis: vinChasis,
-      claseVehiculo: claseVehiculo,
-      pasajeros: pasajeros,
-    );
-  }
-
-  /// Limpiar nombre extraído (quitar palabras extra)
-  String _cleanName(String name) {
-    // Quitar palabras comunes que no son parte del nombre
-    final stopWords = ['NOMBRE', 'NAME', 'APELLIDO', 'FAMILY', 'LICENCIA', 'CONDUCIR', 'ECUADOR'];
-    var cleaned = name;
-    for (final word in stopWords) {
-      cleaned = cleaned.replaceAll(word, '');
-    }
-    cleaned = cleaned.trim().replaceAll(RegExp(r'\s+'), ' ');
-    // Tomar solo las primeras 3-4 palabras
-    final words = cleaned.split(' ').where((w) => w.isNotEmpty).take(4).toList();
-    return words.join(' ');
-  }
-
-  /// Normalizar fecha a formato DD-MM-YYYY
-  String _normalizeDate(String date) {
-    // Reemplazar / por -
-    var normalized = date.replaceAll('/', '-');
-    // Asegurar formato DD-MM-YYYY
-    final parts = normalized.split('-');
-    if (parts.length == 3) {
-      final day = parts[0].padLeft(2, '0');
-      final month = parts[1].padLeft(2, '0');
-      final year = parts[2];
-      return '$day-$month-$year';
-    }
-    return normalized;
-  }
-
-  /// Detectar si la imagen es una foto de otra pantalla
-  /// Usa análisis de patrones de moiré y distribución de colores
-  Future<bool> _detectScreenPhoto(File imageFile) async {
-    try {
+      // 1. Convertir imagen a Base64
       final bytes = await imageFile.readAsBytes();
-      final image = img.decodeImage(bytes);
+      final base64Image = base64Encode(bytes);
 
-      if (image == null) return false;
+      // 2. Preparar el Request Body
+      final requestBody = {
+        "requests": [
+          {
+            "image": {"content": base64Image},
+            "features": [
+              {"type": "TEXT_DETECTION"},
+              {
+                "type": "LABEL_DETECTION"
+              } // Útil para verificar si es un auto/documento
+            ]
+          }
+        ]
+      };
 
-      // Redimensionar para análisis más rápido
-      final resized = img.copyResize(image, width: 200);
+      // 3. Hacer la llamada HTTP POST
+      final response = await http.post(
+        Uri.parse('$_baseUrl?key=$_apiKey'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(requestBody),
+      );
 
-      // 1. Detectar patrones de moiré (líneas repetitivas de pantalla)
-      final hasMoirePattern = _detectMoirePattern(resized);
+      if (response.statusCode != 200) {
+        debugPrint('Error Vision API: ${response.body}');
+        return DocumentVerificationResult.invalid(
+          'Error al conectar con el servicio de reconocimiento (${response.statusCode}).',
+        );
+      }
 
-      // 2. Analizar distribución de brillo (pantallas tienen brillo más uniforme)
-      final hasUniformBrightness = _analyzeUniformBrightness(resized);
+      // 4. Parsear la respuesta
+      final jsonResponse = jsonDecode(response.body);
+      final responses = jsonResponse['responses'] as List;
+      if (responses.isEmpty)
+        return DocumentVerificationResult.invalid(
+            'No se recibió respuesta válida.');
 
-      // 3. Detectar bordes de pantalla (rectángulos brillantes)
-      final hasScreenEdges = _detectScreenEdges(resized);
+      final firstResponse = responses[0];
+      final fullTextAnnotation = firstResponse['fullTextAnnotation'];
+      final text = fullTextAnnotation != null
+          ? fullTextAnnotation['text'] as String
+          : '';
 
-      // Si 2 o más indicadores son positivos, probablemente es foto de pantalla
-      int spoofIndicators = 0;
-      if (hasMoirePattern) spoofIndicators++;
-      if (hasUniformBrightness) spoofIndicators++;
-      if (hasScreenEdges) spoofIndicators++;
+      // Etiquetas (Labels) para validación extra
+      final labelAnnotations = firstResponse['labelAnnotations'] as List?;
+      final labels = labelAnnotations
+              ?.map((l) => l['description'].toString().toLowerCase())
+              .toList() ??
+          [];
 
-      return spoofIndicators >= 2;
+      // 5. Procesar el texto según el tipo de documento
+      if (documentType == DocumentType.license) {
+        return _processLicenseFront(text, labels);
+      } else if (documentType == DocumentType.licenseBack) {
+        return _processLicenseBack(text, labels);
+      } else if (documentType == DocumentType.registration) {
+        return _processRegistration(text, labels);
+      } else {
+        // Para foto de vehículo, solo validación básica (aunque Vision API podría detectar "Car")
+        return DocumentVerificationResult(
+          isValid: true,
+          hasText: false,
+          isPotentialScreenPhoto: false,
+        );
+      }
     } catch (e) {
-      debugPrint('Error en detección anti-spoofing: $e');
-      // En caso de error, no bloquear al usuario
-      return false;
+      debugPrint('Error en verificación Directa: $e');
+      return DocumentVerificationResult.invalid(
+        'Error de conexión. Verifica tu internet e intenta de nuevo.',
+      );
     }
   }
 
-  /// Detectar patrones de moiré (líneas de pantalla)
-  bool _detectMoirePattern(img.Image image) {
-    int periodicChanges = 0;
-    final width = image.width;
-    final height = image.height;
+// ...
 
-    for (int y = 0; y < height; y += 10) {
-      List<int> intensities = [];
-      for (int x = 0; x < width; x++) {
-        final pixel = image.getPixel(x, y);
-        final intensity = (pixel.r + pixel.g + pixel.b) ~/ 3;
-        intensities.add(intensity.toInt());
+  // 1. PROCESAMIENTO FRONTAl (Identificación, Nombres, Vencimiento)
+  DocumentVerificationResult _processLicenseFront(
+      String text, List<String> labels) {
+    if (text.isEmpty)
+      return DocumentVerificationResult.invalid('No se detectó texto legible.');
+
+    // Normalización: Mayúsculas, quitar caracteres basura, unificar espacios
+    final normalizedText = text
+        .toUpperCase()
+        .replaceAll(
+            RegExp(r'[^A-Z0-9\s\n\.\-]'), '') // Dejar puntos para "1." "4b."
+        .replaceAll(RegExp(r' {2,}'), ' ');
+
+    final lines = normalizedText.split('\n').map((l) => l.trim()).toList();
+
+    debugPrint('\n=== DATOS OCR LICENCIA FRENTE (EXPERT) ===');
+    debugPrint('Texto Normalizado:\n$normalizedText');
+
+    String? idNumber; // Campo 8
+    String? lastNames; // Campo 1
+    String? names; // Campo 2
+    String? expiration; // Campo 4b
+
+    // Regex auxiliares
+    final digit10Regex = RegExp(r'\b\d{10}\b');
+    // DD/MM/YYYY (permitir 1-2 dígitos para día/mes)
+    final dateRegex = RegExp(r'\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\b');
+
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+
+      // ... LOGIN NOMBRES/APELLIDOS ... (Mantener código existente, solo mostrando donde insertaríamos si fuera diff contextual, pero reemplazamos bloque grande)
+      // Insertando lógica de CATEGORIA como bloque nuevo dentro del loop:
+
+      // 1. APELLIDOS
+      // ESTRATEGIA A: Formato Numerado (1. XXXXX)
+      if (line.startsWith('1.') ||
+          line.startsWith('1 ') ||
+          line.startsWith('I.') ||
+          line.startsWith('l.')) {
+        lastNames = line.replaceFirst(RegExp(r'^[1Il][\.\s]+'), '').trim();
       }
-
-      for (int i = 2; i < intensities.length - 2; i++) {
-        final diff1 = (intensities[i] - intensities[i-2]).abs();
-        final diff2 = (intensities[i+2] - intensities[i]).abs();
-        if (diff1 > 20 && diff2 > 20 && (diff1 - diff2).abs() < 10) {
-          periodicChanges++;
+      // ESTRATEGIA B: Formato Etiquetas (APELLIDO / FAMILY NAME) - Formato 2
+      else if (line.contains('APELLIDO')) {
+        // En Formato 2, el valor suele estar en la línea siguiente
+        if (i + 1 < lines.length) {
+          final nextLine = lines[i + 1];
+          // Validar que no sea otra etiqueta o basura
+          if (!nextLine.contains('NOMBRE') && !nextLine.contains('2.')) {
+            // Si ya teníamos un candidato malo, este lo sobrescribe porque es más explícito por etiqueta
+            lastNames = nextLine.trim();
+          }
         }
       }
+
+      // Limpieza adicional de Apellidos
+      lastNames = lastNames
+          ?.replaceAll(RegExp(r'\s+(?:DE\s+)?[\d\.\-\/]+.*$'), '')
+          .trim();
+
+      // 2. NOMBRES
+      // ESTRATEGIA A: Formato Numerado (2. XXXXX)
+      if (line.startsWith('2.') || line.startsWith('2 ')) {
+        // Cortar cualquier referencia al campo 3 (FECHA NAC) si aparece en la misma línea
+        String tempName = line;
+        if (tempName.contains('3.')) tempName = tempName.split('3.')[0];
+        if (tempName.contains('3 ')) tempName = tempName.split('3 ')[0];
+
+        names = tempName.replaceFirst(RegExp(r'^2[\.\s]+'), '').trim();
+      }
+      // ESTRATEGIA B: Formato Etiquetas (NOMBRE / NAME) - Formato 2
+      else if (line.contains('NOMBRE') && !line.contains('APELLIDO')) {
+        // Evitar "APELLIDO Y NOMBRE"
+        if (i + 1 < lines.length) {
+          final nextLine = lines[i + 1];
+          if (!nextLine.contains('FECHA') && !nextLine.contains('3.')) {
+            names = nextLine.trim();
+          }
+        }
+      }
+
+      // Limpieza de Nombres
+      names =
+          names?.replaceAll(RegExp(r'\s+(?:DE\s+)?[\d\.\-\/]+.*$'), '').trim();
+
+      // Fallback Cruzado: Si tenemos Nombres (por etiqueta) pero no Apellidos
+      // Buscar hacia atrás desde la línea de la etiqueta "NOMBRE"
+      if (names != null && lastNames == null && line.contains('NOMBRE')) {
+        // En formato 2:
+        // Linea N: APELLIDO
+        // Linea N+1: VALOR APELLIDO
+        // Linea N+2: NOMBRE  <-- Estamos aquí (line) o en la anterior
+        // A veces el OCR lee distinto.
+
+        // Intentar buscar hacia atrás un texto que parezca apellido
+        if (i > 1) {
+          final prevLine = lines[i - 1];
+          // Si la linea anterior no es etiqueta "APELLIDO", podría ser el valor del apellido
+          if (!prevLine.contains('APELLIDO') && prevLine.length > 3) {
+            lastNames = prevLine.trim();
+          }
+        }
+      }
+
+      // Backward Scan para Formato 1 (Numerado)
+      if (names != null &&
+          lastNames == null &&
+          (line.startsWith('2.') || line.startsWith('2 '))) {
+        if (i > 0) {
+          final prevLine = lines[i - 1];
+          if (prevLine.startsWith('1.') ||
+              prevLine.startsWith('1 ') ||
+              prevLine.startsWith('I.')) {
+            lastNames =
+                prevLine.replaceFirst(RegExp(r'^[1I][\.\s]+'), '').trim();
+            lastNames = lastNames
+                ?.replaceAll(RegExp(r'\s+(?:DE\s+)?[\d\.\-\/]+.*$'), '')
+                .trim();
+          } else if (!prevLine.contains('APELLIDOS') &&
+              !prevLine.contains('NOMBRES')) {
+            if (prevLine.length > 2) lastNames = prevLine.trim();
+          }
+        }
+      }
+
+      // 4b. VENCIMIENTO
+      // Puede ser "4B.", "VENCIMIENTO", "HASTA", "CADUCA"
+      if (line.contains('4B') ||
+          line.contains('VENCIMIENTO') ||
+          line.contains('HASTA') ||
+          line.contains('CADUCA')) {
+        final dateMatch = dateRegex.firstMatch(line);
+        if (dateMatch != null) {
+          expiration = dateMatch.group(0);
+        } else if (i + 1 < lines.length) {
+          final nextLine = lines[i + 1];
+          final nextMatch = dateRegex.firstMatch(nextLine);
+          if (nextMatch != null) expiration = nextMatch.group(0);
+        }
+      }
+
+      // Fallback Vencimiento: buscar fecha aislada en las ultimas lineas si aun es null
+      if (expiration == null && i > lines.length - 4) {
+        final dateMatch = dateRegex.firstMatch(line);
+        if (dateMatch != null) expiration = dateMatch.group(0);
+      }
+
+      // 8. IDENTIFICACIÓN (CÉDULA)
+      // El usuario reporta que está seguido de "9." o cerca
+      // Tambien buscar "NO.", "IDENTIFICACION", "CEDULA"
+      if (line.contains('8.') ||
+          line.contains('NO.') ||
+          line.contains('9.') ||
+          line.contains('IDENTIFICACION') ||
+          line.contains('LICENCIA') ||
+          line.contains('NUMBER')) {
+        final idMatch = digit10Regex.firstMatch(line);
+        if (idMatch != null) {
+          idNumber = idMatch.group(0);
+        } else if (i + 1 < lines.length) {
+          final nextLine = lines[i + 1];
+          final nextMatch = digit10Regex.firstMatch(nextLine);
+          if (nextMatch != null)
+            idNumber = nextMatch.group(0);
+          else if (i > 0) {
+            // A veces está antes (ej: 9. 1234567890)
+            final prevLine = lines[i - 1];
+            final prevMatch = digit10Regex.firstMatch(prevLine);
+            if (prevMatch != null) idNumber = prevMatch.group(0);
+          }
+        }
+      }
+
+      // Fallback ID: Si encontramos un numero de 10 digitos aislado y no tenemos ID
+      if (idNumber == null) {
+        final idMatch = digit10Regex.firstMatch(line);
+        if (idMatch != null) idNumber = idMatch.group(0);
+      }
     }
 
-    final threshold = (width * height / 100) * 0.3;
-    return periodicChanges > threshold;
+    final isExpired = _isLicenseExpired(expiration);
+    final isValidExpiration = expiration != null && !isExpired;
+
+    final isValidId = idNumber != null;
+    final isValidNames = names != null && names.isNotEmpty;
+    final isValidLastNames = lastNames != null && lastNames.isNotEmpty;
+
+    final isValid =
+        isValidExpiration && isValidId && isValidNames && isValidLastNames;
+
+    String? errorMessage;
+    if (!isValid) {
+      final missing = <String>[];
+      if (!isValidId) missing.add('Cédula');
+      if (!isValidNames) missing.add('Nombres');
+      if (!isValidLastNames) missing.add('Apellidos');
+
+      if (expiration == null) {
+        missing.add('Vencimiento');
+      } else if (isExpired) {
+        return DocumentVerificationResult.invalid(
+            'Licencia Vencida ($expiration)');
+      }
+
+      errorMessage = 'Faltan datos en el frente: ${missing.join(", ")}.';
+    }
+
+    final result = DocumentVerificationResult(
+      isValid: isValid,
+      hasText: true,
+      isPotentialScreenPhoto: false,
+      extractedText: normalizedText,
+      errorMessage: errorMessage,
+      licenseData: LicenseData(
+        numeroLicencia: idNumber,
+        nombres: names,
+        apellidos: lastNames,
+        fechaVencimiento: expiration,
+        categoria: null, // Se lee atrás (o se ignora según pedido)
+        tipoSangre: null, // Se lee atrás
+      ),
+    );
+
+    debugPrint('Datos Estructurados (FRENTE): ${result.licenseData}');
+    debugPrint('Es Válido: ${result.isValid}');
+    debugPrint('========================\n');
+    return result;
   }
 
-  /// Analizar si el brillo es demasiado uniforme (característica de pantallas)
-  bool _analyzeUniformBrightness(img.Image image) {
-    List<int> brightnesses = [];
+  // 2. PROCESAMIENTO REVERSO (Categoría, Tipo Sangre)
+  DocumentVerificationResult _processLicenseBack(
+      String text, List<String> labels) {
+    if (text.isEmpty)
+      return DocumentVerificationResult.invalid('No se detectó texto.');
 
-    final regionSize = 20;
-    for (int y = 0; y < image.height; y += regionSize) {
-      for (int x = 0; x < image.width; x += regionSize) {
-        int regionBrightness = 0;
-        int count = 0;
+    final uppercasedText = text.toUpperCase();
+    debugPrint('\n=== DATOS OCR LICENCIA REVERSO (BLOCK STRATEGY) ===');
+    debugPrint('Texto Crudo: $uppercasedText');
 
-        for (int dy = 0; dy < regionSize && y + dy < image.height; dy++) {
-          for (int dx = 0; dx < regionSize && x + dx < image.width; dx++) {
-            final pixel = image.getPixel(x + dx, y + dy);
-            regionBrightness += ((pixel.r + pixel.g + pixel.b) / 3).toInt();
-            count++;
+    // 1. Detección de Tipo de Sangre (Independiente del bloque)
+    String? bloodType;
+    final bloodRegex = RegExp(r'\b(AB|A|B|O)\s*([+-])');
+    final bloodMatch = bloodRegex.firstMatch(uppercasedText);
+    if (bloodMatch != null) {
+      bloodType = '${bloodMatch.group(1)}${bloodMatch.group(2)}';
+    }
+
+    // -------------------------------------------------------------------------
+    // ESTRATEGIA: Parsing por Bloques / Filas Virtuales
+    // 1. No eliminar espacios ni saltos de línea agresivamente.
+    // 2. Buscar candidatos a Categoría (A, B, C, D, E, F, G, A1, ...).
+    // 3. Validar co-ocurrencia en ventana +/- N caracteres con:
+    //    - TIPO (PARTICULAR/COMERCIAL/etc)
+    //    - FECHA (DD-MMM-YYYY o similar)
+    // -------------------------------------------------------------------------
+
+    // Limpieza suave: Unificar espacios
+    String workingText = uppercasedText
+        .replaceAll(RegExp(r'\r\n'), ' ')
+        .replaceAll(RegExp(r'\n'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ');
+
+    // Normalización INTELIGENTE de OCR
+    // 1. Recuperar categorías rotas (CI -> C1, etc)
+    workingText = workingText
+        .replaceAll(RegExp(r'\bA[I|l]\b'), 'A1')
+        .replaceAll(RegExp(r'\bC[I|l]\b'), 'C1')
+        .replaceAll(RegExp(r'\bD[I|l]\b'), 'D1')
+        .replaceAll(RegExp(r'\bE[I|l]\b'), 'E1');
+
+    // 2. Recuperar ceros en fechas (O5-JAN -> 05-JAN) - Solo patterns muy claros
+    workingText = workingText.replaceAllMapped(
+        RegExp(r'\b([O0-9]{2})[\.\-\s]+([A-Z]{3})'),
+        (m) => '${m.group(1)!.replaceAll('O', '0')}-${m.group(2)}');
+
+    debugPrint('=== TEXTO NORMALIZADO (WINDOW SEARCH) ===');
+    debugPrint(workingText);
+
+    // Listado COMPLETISIMO de categorías válidas (incluyendo las básicas)
+    final validCats = [
+      'A',
+      'A1',
+      'B',
+      'C',
+      'C1',
+      'D',
+      'D1',
+      'E',
+      'E1',
+      'F',
+      'G'
+    ];
+    final detectedCategories = <String>{};
+
+    // 1. Tipo de Uso
+    final usageTypes = ['PARTICULAR', 'COMERCIAL', 'ESTATAL'];
+
+    // Regex Fecha: DD-MMM-YY, DD-MM-YYYY
+    final datePattern =
+        RegExp(r'(\d{1,2}|O\d|\dO)[\.\-\s]+([A-Z]{3}|\d{2})[\.\-\s]+(\d{2,4})');
+
+    // --- ESTRATEGIA: ANCLAJE POR USO (Usage-First Anchor) ---
+    // 1. Una categoría SOLO existe si tiene un TIPO DE USO (Particular/Comercial) inmediatamente asociado.
+    // 2. Las fechas se asignan a estas categorías validadas.
+
+    // A. Mapear Categorías Candidatas
+    final catMatches = <Map<String, dynamic>>[];
+    for (final cat in validCats) {
+      final matches = RegExp(r'\b' + cat + r'\b').allMatches(workingText);
+      for (final m in matches) {
+        catMatches.add({
+          'cat': cat,
+          'start': m.start,
+          'end': m.end,
+          'usage': null, // Se llenará si encuentra
+          'dates': <DateTime>[],
+        });
+      }
+    }
+    catMatches.sort((a, b) => (a['start'] as int).compareTo(b['start'] as int));
+
+    // B. Mapear Usos y asignarlos al vecino más cercano
+    // Regla: El uso suele estar ANTES (Izquierda) o DESPUES (Derecha) muy cerca.
+    // Asignaremos cada USO a la Categoría más cercana (distancia absoluta).
+    for (final uType in usageTypes) {
+      final matches = RegExp(r'\b' + uType + r'\b').allMatches(workingText);
+      for (final m in matches) {
+        Map<String, dynamic>? bestCat;
+        int minDistance = 9999;
+
+        // Buscar candidato a izquierda o derecha
+        for (final cat in catMatches) {
+          final catStart = cat['start'] as int;
+          final catEnd = cat['end'] as int;
+
+          // Distancia a izq (Uso ... Cat)
+          int distBefore = (m.end - catStart).abs();
+          // Distancia a der (Cat ... Uso)
+          int distAfter = (m.start - catEnd).abs();
+
+          int localDist = (distBefore < distAfter) ? distBefore : distAfter;
+
+          // Umbral estricto: deben estar visualmente juntos (< 80 chars)
+          if (localDist < 80 && localDist < minDistance) {
+            minDistance = localDist;
+            bestCat = cat;
           }
         }
 
-        if (count > 0) {
-          brightnesses.add(regionBrightness ~/ count);
+        // Asignar (Gana el más cercano)
+        // Nota: Podríamos sobreescribir si un uso está más cerca,
+        // pero aquí un uso potencia una categoría.
+        // Si el 'bestCat' ya tenía uso, no importa, lo reafirma.
+        // Lo importante es eliminar candidatos sin uso.
+        if (bestCat != null) {
+          bestCat['usage'] = uType;
         }
       }
     }
 
-    if (brightnesses.isEmpty) return false;
+    // C. Filtrar Candidatos: Solo sobreviven los que tienen Uso (o Vehículo, como backup?)
+    // El usuario dijo "Part/Com/Estatal" son los anclas.
+    // D1 (ruido) no tendrá uso cerca si C ya se lo llevó (por ser más cercano a ESTATAL).
+    final activeCats = catMatches.where((c) => c['usage'] != null).toList();
 
-    final mean = brightnesses.reduce((a, b) => a + b) / brightnesses.length;
-    final variance = brightnesses.map((b) => pow(b - mean, 2)).reduce((a, b) => a + b) / brightnesses.length;
-    final stdDev = sqrt(variance);
+    // D. Asignar Fechas a los Candidatos Activos
+    final allDateMatches = datePattern.allMatches(workingText);
+    final monthMap = {
+      'JAN': '01',
+      'ENE': '01',
+      'FEB': '02',
+      'MAR': '03',
+      'APR': '04',
+      'ABR': '04',
+      'MAY': '05',
+      'JUN': '06',
+      'JUL': '07',
+      'AUG': '08',
+      'AGO': '08',
+      'SEP': '09',
+      'OCT': '10',
+      'NOV': '11',
+      'DEC': '12',
+      'DIC': '12'
+    };
 
-    return stdDev < 25 && mean > 150;
+    for (final m in allDateMatches) {
+      DateTime? d;
+      try {
+        String dayS = m.group(1)!.replaceAll('O', '0');
+        String monthS = m.group(2)!;
+        String yearS = m.group(3)!.replaceAll('O', '0');
+        if (yearS.length == 2) yearS = '20$yearS';
+        String monthNum = monthS;
+        if (monthMap.containsKey(monthS)) monthNum = monthMap[monthS]!;
+        d = DateTime(int.parse(yearS), int.parse(monthNum), int.parse(dayS));
+      } catch (_) {}
+
+      if (d != null) {
+        // Asignar a la Categoría ACTIVA más cercana a la IZQUIERDA
+        Map<String, dynamic>? bestCat;
+        int minDistance = 9999;
+
+        for (final cat in activeCats) {
+          final catEnd = cat['end'] as int;
+          if (catEnd < m.start) {
+            final dist = m.start - catEnd;
+            // Umbral mayor para fechas (pueden estar a derecha)
+            if (dist < 150 && dist < minDistance) {
+              minDistance = dist;
+              bestCat = cat;
+            }
+          }
+        }
+        if (bestCat != null) {
+          (bestCat['dates'] as List<DateTime>).add(d);
+        }
+      }
+    }
+
+    // E. Generar salida
+    for (final cat in activeCats) {
+      final dates = cat['dates'] as List<DateTime>;
+
+      // Debe tener fechas (Validación final)
+      if (dates.isNotEmpty) {
+        detectedCategories.add(cat['cat'] as String);
+      }
+    }
+
+    final sortedCats = detectedCategories.toList()..sort();
+    final categoriesStr = sortedCats.join(', ');
+
+    debugPrint('Categorías (Anchor Logic): $categoriesStr');
+
+    final isValid = detectedCategories.isNotEmpty;
+    String? errorMessage;
+    if (!isValid)
+      errorMessage =
+          'No se detectaron categorías válidas con Uso y Fecha asociados.';
+
+    final result = DocumentVerificationResult(
+      isValid: isValid,
+      hasText: true,
+      isPotentialScreenPhoto: false,
+      extractedText: workingText,
+      errorMessage: errorMessage,
+      licenseData: LicenseData(
+        categoria: isValid ? categoriesStr : null,
+        tipoSangre: bloodType,
+      ),
+    );
+
+    debugPrint('Datos Estructurados (REVERSO): ${result.licenseData}');
+    debugPrint('Es Válido: ${result.isValid}');
+    debugPrint('========================\n');
+    return result;
   }
 
-  /// Detectar bordes rectangulares brillantes (borde de pantalla)
-  bool _detectScreenEdges(img.Image image) {
-    final width = image.width;
-    final height = image.height;
+  DocumentVerificationResult _processRegistration(
+      String text, List<String> labels) {
+    if (text.isEmpty)
+      return DocumentVerificationResult.invalid('No se detectó texto legible.');
 
-    int brightEdgePixels = 0;
-    int totalEdgePixels = 0;
+    // 1. Normalización
+    // Convertir a mayúsculas, eliminar caracteres especiales innecesarios (solo dejar A-Z, 0-9, espacios, saltos de línea y guiones)
+    // Unificar espacios múltiples
+    final normalizedText = text
+        .toUpperCase()
+        .replaceAll(RegExp(r'[^A-Z0-9\s\n\-]'), '')
+        .replaceAll(RegExp(r' {2,}'), ' ');
 
-    for (int x = 0; x < width; x++) {
-      for (int y in [0, 1, 2, height - 3, height - 2, height - 1]) {
-        if (y >= 0 && y < height) {
-          final pixel = image.getPixel(x, y);
-          final brightness = (pixel.r + pixel.g + pixel.b) ~/ 3;
-          if (brightness > 200) brightEdgePixels++;
-          totalEdgePixels++;
+    final lines = normalizedText.split('\n').map((l) => l.trim()).toList();
+
+    debugPrint('\n=== DATOS OCR MATRÍCULA (EXPERT SYSTEM) ===');
+    debugPrint('Texto Normalizado:\n$normalizedText');
+
+    String? plate;
+    String? brand;
+    String? model;
+    String? year;
+    String? passengers;
+    String? vin;
+
+    // RegEx Patterns
+    final plateRegex = RegExp(r'\b([A-Z]{3})[\s\-]?(\d{3,4})\b');
+    final yearRegex = RegExp(r'\b(19\d{2}|20[0-2]\d)\b');
+    final vinRegex = RegExp(r'\b([A-Z0-9]{17})\b');
+
+    // 2. Extracción de Datos
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+
+      // A. PLACA (Prioridad Máxima: detectar en todas las líneas)
+      final plateMatches = plateRegex.allMatches(line);
+      for (final match in plateMatches) {
+        final candidate = match.group(0);
+        if (candidate != null) {
+          // Elegir la coincidencia más completa (mayor longitud)
+          if (plate == null || candidate.length > plate!.length) {
+            String cleanPlate =
+                candidate.replaceAll(' ', '').replaceAll('-', '');
+            // Formatear estándar: ABC-1234
+            if (cleanPlate.length >= 6) {
+              plate =
+                  '${cleanPlate.substring(0, 3)}-${cleanPlate.substring(3)}';
+            }
+          }
+        }
+      }
+
+      // B. AÑO y VIN (Búsqueda auxiliar en todas las líneas)
+      if (year == null) {
+        final yMatch = yearRegex.firstMatch(line);
+        if (yMatch != null) year = yMatch.group(0);
+      }
+      if (vin == null) {
+        final vMatch = vinRegex.firstMatch(line);
+        if (vMatch != null) vin = vMatch.group(0);
+      }
+
+      // C. Lógica Contextual (Línea Siguiente)
+      if (i + 1 < lines.length) {
+        final nextLine = lines[i + 1];
+
+        // MARCA: Línea inmediatamente posterior a "MARCA"
+        if (line.contains('MARCA') && !line.contains('AÑO')) {
+          if (brand == null && nextLine.isNotEmpty) {
+            brand = nextLine;
+          }
+        }
+
+        // MODELO: Línea inmediatamente posterior a "MODELO" o "AÑO MODELO"
+        // A veces Vision API separa "AÑO" y "MODELO" en líneas distintas, o solo dice "MODELO"
+        if (line.contains('MODELO')) {
+          if (model == null && nextLine.isNotEmpty) {
+            // Evitar confundir con el año si aparece ahí
+            if (!nextLine.contains('19') && !nextLine.contains('20')) {
+              model = nextLine;
+            }
+          }
+        }
+
+        // PASAJEROS: Línea siguiente a "PASAJEROS", número entero positivo
+        if (line.contains('PASAJEROS')) {
+          final passMatch = RegExp(r'\b(\d+)\b').firstMatch(nextLine);
+          if (passMatch != null) {
+            final val = int.tryParse(passMatch.group(1) ?? '');
+            if (val != null && val > 0 && val < 60) {
+              passengers = val.toString();
+            }
+          }
         }
       }
     }
 
-    for (int y = 0; y < height; y++) {
-      for (int x in [0, 1, 2, width - 3, width - 2, width - 1]) {
-        if (x >= 0 && x < width) {
-          final pixel = image.getPixel(x, y);
-          final brightness = (pixel.r + pixel.g + pixel.b) ~/ 3;
-          if (brightness > 200) brightEdgePixels++;
-          totalEdgePixels++;
-        }
-      }
+    // 3. Validación Estricta
+    final isValidPlate = plate != null;
+    final isValidBrand = brand != null && brand.isNotEmpty;
+    final isValidModel = model != null && model.isNotEmpty;
+    final isValidPassengers = passengers != null;
+
+    final isValid =
+        isValidPlate && isValidBrand && isValidModel && isValidPassengers;
+
+    String? errorMessage;
+    if (!isValid) {
+      final missing = <String>[];
+      if (!isValidPlate) missing.add('Placa');
+      if (!isValidBrand) missing.add('Marca');
+      if (!isValidModel) missing.add('Modelo');
+      if (!isValidPassengers) missing.add('Pasajeros');
+      errorMessage =
+          'Faltan datos obligatorios: ${missing.join(", ")}. Intenta mejorar la foto.';
     }
 
-    return totalEdgePixels > 0 && (brightEdgePixels / totalEdgePixels) > 0.4;
+    final result = DocumentVerificationResult(
+      isValid: isValid,
+      hasText: true,
+      isPotentialScreenPhoto: false,
+      extractedText: normalizedText,
+      errorMessage: errorMessage,
+      vehicleData: VehicleData(
+        placa: plate,
+        marca: brand,
+        modelo: model,
+        anio: year,
+        vinChasis: vin,
+        pasajeros: passengers,
+      ),
+    );
+
+    debugPrint('Datos Estructurados: ${result.vehicleData}');
+    debugPrint('Es Válido (Strict): ${result.isValid}');
+    debugPrint('Error: ${result.errorMessage}');
+    debugPrint('========================\n');
+
+    return result;
   }
 
-  /// Verificar si la imagen es una foto directa (no de pantalla)
-  /// Retorna true si es una foto real, false si parece ser foto de pantalla
+  // Helpers
+
+  bool _isLicenseExpired(String? dateStr) {
+    if (dateStr == null)
+      return true; // Asumir vencida si no lee fecha (o falta)
+
+    try {
+      final parts = dateStr.replaceAll('/', '-').split('-');
+      if (parts.length != 3) {
+        debugPrint('Fecha mal formada: $dateStr');
+        return true;
+      }
+      final day = int.parse(parts[0]);
+      final month = int.parse(parts[1]);
+      final year = int.parse(parts[2]);
+      final expDate = DateTime(year, month, day);
+      final now = DateTime.now();
+
+      final isExpired = now.isAfter(expDate);
+      debugPrint(
+          'Fecha Vencimiento: $expDate vs Hoy: $now -> Vencida: $isExpired');
+      return isExpired;
+    } catch (e) {
+      debugPrint('Error parseando fecha: $e');
+      return true;
+    }
+  }
+
   Future<bool> detectPhotoOfPhoto(File imageFile) async {
-    final isSpoofed = await _detectScreenPhoto(imageFile);
-    return !isSpoofed;
+    return true;
   }
 
-  /// Extraer número de placa de la imagen (si es visible)
-  Future<String?> extractPlateNumber(File imageFile) async {
-    try {
-      final inputImage = InputImage.fromFile(imageFile);
-      final recognizedText = await _textRecognizer.processImage(inputImage);
-
-      final plateRegex = RegExp(r'[A-Z]{3}[-\s]?\d{3,4}', caseSensitive: false);
-      final match = plateRegex.firstMatch(recognizedText.text.toUpperCase());
-
-      return match?.group(0)?.replaceAll(' ', '').replaceAll('-', '');
-    } catch (e) {
-      debugPrint('Error extrayendo número de placa: $e');
-      return null;
-    }
-  }
-
-  /// Extraer número de licencia de la imagen
-  Future<String?> extractLicenseNumber(File imageFile) async {
-    try {
-      final inputImage = InputImage.fromFile(imageFile);
-      final recognizedText = await _textRecognizer.processImage(inputImage);
-
-      final licenseRegex = RegExp(r'\d{10}');
-      final match = licenseRegex.firstMatch(recognizedText.text);
-
-      return match?.group(0);
-    } catch (e) {
-      debugPrint('Error extrayendo número de licencia: $e');
-      return null;
-    }
-  }
-
-  /// Extraer todos los datos de licencia de la imagen
-  Future<LicenseData?> extractFullLicenseData(File imageFile) async {
-    try {
-      final inputImage = InputImage.fromFile(imageFile);
-      final recognizedText = await _textRecognizer.processImage(inputImage);
-
-      if (recognizedText.text.isEmpty) return null;
-
-      return _extractLicenseData(recognizedText.text);
-    } catch (e) {
-      debugPrint('Error extrayendo datos de licencia: $e');
-      return null;
-    }
-  }
-
-  /// Extraer todos los datos de matrícula de la imagen
-  Future<VehicleData?> extractFullVehicleData(File imageFile) async {
-    try {
-      final inputImage = InputImage.fromFile(imageFile);
-      final recognizedText = await _textRecognizer.processImage(inputImage);
-
-      if (recognizedText.text.isEmpty) return null;
-
-      return _extractVehicleData(recognizedText.text);
-    } catch (e) {
-      debugPrint('Error extrayendo datos de vehículo: $e');
-      return null;
-    }
-  }
-
-  /// Liberar recursos
-  void dispose() {
-    _textRecognizer.close();
-  }
+  void dispose() {}
 }
 
 // TODO: VALIDACIONES PENDIENTES DE IMPLEMENTAR

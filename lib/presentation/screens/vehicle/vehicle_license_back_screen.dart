@@ -10,16 +10,18 @@ import '../../../data/models/license_data.dart';
 import '../../../data/services/document_verification_service.dart';
 import '../../widgets/common/custom_button.dart';
 
-/// Pantalla para capturar foto de la licencia de conducir
-class VehicleLicenseScreen extends StatefulWidget {
+/// Pantalla para capturar foto del REVERSO de la licencia de conducir
+class VehicleLicenseBackScreen extends StatefulWidget {
   final String userId;
   final String role;
   final String vehicleOwnership;
   final String driverRelation;
   final String matriculaPhotoPath;
   final Map<String, String> vehicleData;
+  final String licenseFrontPhotoPath;
+  final Map<String, dynamic> licenseFrontData;
 
-  const VehicleLicenseScreen({
+  const VehicleLicenseBackScreen({
     super.key,
     required this.userId,
     required this.role,
@@ -27,20 +29,23 @@ class VehicleLicenseScreen extends StatefulWidget {
     required this.driverRelation,
     required this.matriculaPhotoPath,
     required this.vehicleData,
+    required this.licenseFrontPhotoPath,
+    required this.licenseFrontData,
   });
 
   @override
-  State<VehicleLicenseScreen> createState() => _VehicleLicenseScreenState();
+  State<VehicleLicenseBackScreen> createState() =>
+      _VehicleLicenseBackScreenState();
 }
 
-class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
+class _VehicleLicenseBackScreenState extends State<VehicleLicenseBackScreen> {
   final _imagePicker = ImagePicker();
   final _documentService = DocumentVerificationService();
 
   File? _photo;
   bool _isVerifying = false;
   bool _isVerified = false;
-  LicenseData? _licenseData;
+  LicenseData? _licenseBackData;
 
   @override
   void dispose() {
@@ -74,7 +79,7 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
         _photo = File(image.path);
         _isVerifying = true;
         _isVerified = false;
-        _licenseData = null;
+        _licenseBackData = null;
       });
 
       await _verifyDocument(File(image.path));
@@ -83,9 +88,10 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
 
   Future<void> _verifyDocument(File imageFile) async {
     try {
+      // Usamos licenseBack para que busque Categoría
       final result = await _documentService.verifyDocument(
         imageFile: imageFile,
-        documentType: DocumentType.license,
+        documentType: DocumentType.licenseBack,
       );
 
       if (!mounted) return;
@@ -94,7 +100,7 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
         setState(() {
           _isVerifying = false;
           _isVerified = true;
-          _licenseData = result.licenseData;
+          _licenseBackData = result.licenseData;
         });
       } else {
         setState(() {
@@ -103,7 +109,7 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
           _photo = null;
         });
 
-        _showRetakeDialog(result.errorMessage ?? 'Documento no válido');
+        _showRetakeDialog(result.errorMessage ?? 'No se detectó la categoría.');
       }
     } catch (e) {
       if (mounted) {
@@ -170,11 +176,10 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
       builder: (context) => AlertDialog(
         icon: const Icon(Icons.warning_amber_rounded,
             color: AppColors.warning, size: 48),
-        title: const Text('Licencia no válida'),
+        title: const Text('Reverso no válido'),
         content: Text(
           '$message\n\nAsegúrate de que:\n'
-          '• La licencia esté completa y visible\n'
-          '• Sea una licencia tipo B vigente\n'
+          '• Se vea claramente el "TIPO" o "CATEGORÍA"\n'
           '• Haya buena iluminación\n'
           '• Sea el documento físico',
         ),
@@ -193,9 +198,23 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
   }
 
   void _handleContinue() {
-    if (!_isVerified || _licenseData == null) return;
+    if (!_isVerified || _licenseBackData == null) return;
 
-    // Redirigir directamente a foto del vehículo (Saltando Reverso)
+    // FUSIONAR DATOS (Frente + Reverso)
+    final frontData = widget.licenseFrontData;
+    final backData =
+        _licenseBackData!.toMap(); // Mapa con categoria, tipoSangre
+
+    // Crear mapa final combinado
+    final finalLicenseData = Map<String, dynamic>.from(frontData);
+    finalLicenseData['categoria'] = backData['categoria'];
+    finalLicenseData['tipo_sangre'] = backData['tipo_sangre'];
+
+    // Enviar TODO al siguiente paso (Foto Vehículo)
+    // Nota: Pasamos licenseFrontPhotoPath como la "foto de licencia" principal
+    // (o podríamos pasar ambas, pero el RegisterVehicleEvent solo pide licensePhotoUrl singular.
+    // Como las deshabilitamos, no importa mucho, pero pasamos la del frente por consistencia).
+
     context.push('/register/vehicle/photo', extra: {
       'userId': widget.userId,
       'role': widget.role,
@@ -203,10 +222,8 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
       'driverRelation': widget.driverRelation,
       'matriculaPhoto': widget.matriculaPhotoPath,
       'vehicleData': widget.vehicleData,
-      // Usamos la foto frontal como "La Foto de Licencia"
-      'licensePhoto': _photo!.path,
-      // Usamos los datos frontales (que ya incluyen categoría) como definitivos
-      'licenseData': _licenseData!.toMap(),
+      'licensePhoto': widget.licenseFrontPhotoPath,
+      'licenseData': finalLicenseData,
     });
   }
 
@@ -222,7 +239,7 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
           onPressed: () => context.pop(),
         ),
         title: Text(
-          'Licencia de conducir (Frente)',
+          'Reverso de Licencia',
           style: AppTextStyles.h3.copyWith(color: AppColors.textPrimary),
         ),
       ),
@@ -232,22 +249,26 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _buildProgressIndicator(2, 4),
+              _buildProgressIndicator(3, 4), // Paso 3 de 4 (aprox)
               const SizedBox(height: AppDimensions.spacingL),
-              Text('Frente de tu licencia', style: AppTextStyles.h1),
+
+              Text('Reverso de tu licencia', style: AppTextStyles.h1),
               const SizedBox(height: AppDimensions.spacingS),
               Text(
-                'Toma una foto del FRENTE de tu licencia de conducir tipo B',
+                'Toma una foto del REVERSO donde aparece la CATEGORÍA (Tipo B)',
                 style: AppTextStyles.body1
                     .copyWith(color: AppColors.textSecondary),
               ),
               const SizedBox(height: AppDimensions.spacingL),
+
               Expanded(child: _buildPhotoArea()),
               const SizedBox(height: AppDimensions.spacingL),
-              if (_isVerified && _licenseData != null) ...[
+
+              if (_isVerified && _licenseBackData != null) ...[
                 _buildLicenseInfoCard(),
                 const SizedBox(height: AppDimensions.spacingL),
               ],
+
               if (_photo == null)
                 CustomButton.primary(
                   text: 'Tomar foto',
@@ -329,7 +350,7 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
                             CircularProgressIndicator(color: Colors.white),
                             SizedBox(height: 16),
                             Text(
-                              'Verificando licencia...',
+                              'Analizando reverso...',
                               style:
                                   TextStyle(color: Colors.white, fontSize: 16),
                             ),
@@ -372,12 +393,12 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
                       color: AppColors.primary.withOpacity(0.1),
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.badge,
+                    child: const Icon(Icons.flip_camera_android,
                         size: 40, color: AppColors.primary),
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Toca para tomar foto',
+                    'Toca para tomar foto del reverso',
                     style: AppTextStyles.body1
                         .copyWith(color: AppColors.textSecondary),
                   ),
@@ -388,7 +409,7 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
   }
 
   Widget _buildLicenseInfoCard() {
-    final data = _licenseData;
+    final data = _licenseBackData;
     if (data == null) return const SizedBox.shrink();
 
     return Container(
@@ -407,23 +428,15 @@ class _VehicleLicenseScreenState extends State<VehicleLicenseScreen> {
                   color: AppColors.success, size: 20),
               const SizedBox(width: 8),
               Text(
-                'Licencia verificada',
+                'Datos de Reverso Detectados',
                 style: AppTextStyles.label.copyWith(color: AppColors.success),
               ),
             ],
           ),
           const SizedBox(height: 12),
           // Mostrar datos extraídos
-          if (data.numeroLicencia != null)
-            _buildLicenseDataRow('N° Licencia', data.numeroLicencia!),
-          if (data.apellidos != null)
-            _buildLicenseDataRow('Apellidos', data.apellidos!),
-          if (data.nombres != null)
-            _buildLicenseDataRow('Nombres', data.nombres!),
           if (data.categoria != null)
             _buildLicenseDataRow('Categoría', data.categoria!),
-          if (data.fechaVencimiento != null)
-            _buildLicenseDataRow('Vencimiento', data.fechaVencimiento!),
           if (data.tipoSangre != null)
             _buildLicenseDataRow('Tipo sangre', data.tipoSangre!),
         ],
