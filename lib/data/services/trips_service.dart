@@ -496,6 +496,9 @@ class TripsService {
   /// Completar viaje y limpiar ride_requests asociadas
   Future<void> completeTrip(String tripId) async {
     try {
+      // Obtener datos del viaje para incrementar contadores
+      final trip = await getTrip(tripId);
+
       await _firestore
           .collection(_tripsCollection)
           .doc(tripId)
@@ -504,12 +507,54 @@ class TripsService {
         'completedAt': Timestamp.now(),
       });
 
+      // Incrementar contadores de viajes para conductor y pasajeros
+      if (trip != null) {
+        await _incrementTripCounters(trip);
+      }
+
       // Limpiar ride_requests asociadas a este viaje
       await _cleanupRideRequests(tripId, 'completed');
     } on FirebaseException catch (e) {
       throw _handleFirestoreError(e);
     } catch (e) {
       throw Exception('Error al completar viaje: $e');
+    }
+  }
+
+  /// Incrementar contadores de viajes para conductor y pasajeros
+  Future<void> _incrementTripCounters(TripModel trip) async {
+    try {
+      // Incrementar para el conductor: totalTrips + tripsAsDriver
+      await _firestore
+          .collection('users')
+          .doc(trip.driverId)
+          .update({
+        'totalTrips': FieldValue.increment(1),
+        'tripsAsDriver': FieldValue.increment(1),
+      });
+      debugPrint('📊 Incrementado tripsAsDriver para ${trip.driverId}');
+
+      // Incrementar para cada pasajero que completó el viaje (dropped_off)
+      for (final passenger in trip.passengers) {
+        if (passenger.status == 'dropped_off' ||
+            passenger.status == 'picked_up') {
+          try {
+            await _firestore
+                .collection('users')
+                .doc(passenger.userId)
+                .update({
+              'totalTrips': FieldValue.increment(1),
+              'tripsAsPassenger': FieldValue.increment(1),
+            });
+            debugPrint('📊 Incrementado tripsAsPassenger para ${passenger.userId}');
+          } catch (e) {
+            debugPrint('⚠️ Error incrementando trips para pasajero ${passenger.userId}: $e');
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error incrementando contadores de viajes: $e');
+      // No relanzar — los contadores son informativos, no críticos
     }
   }
 

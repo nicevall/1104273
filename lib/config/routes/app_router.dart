@@ -22,6 +22,7 @@ import '../../presentation/screens/vehicle/vehicle_photo_screen.dart';
 import '../../presentation/screens/vehicle/vehicle_summary_screen.dart';
 import '../../presentation/screens/home/home_screen.dart';
 import '../../presentation/screens/home/activity_screen.dart';
+import '../../presentation/screens/home/trip_detail_screen.dart';
 import '../../presentation/screens/profile/profile_screen.dart';
 import '../../presentation/screens/trip/plan_trip_screen.dart';
 import '../../presentation/screens/trip/map_route_screen.dart';
@@ -291,6 +292,20 @@ final GoRouter appRouter = GoRouter(
         return ActivityScreen(
           userId: extra?['userId'] as String? ?? '',
           activeRole: extra?['activeRole'] as String? ?? 'pasajero',
+        );
+      },
+    ),
+
+    // Trip Detail Screen - Detalle de un viaje completado
+    GoRoute(
+      path: '/trip/detail',
+      name: 'trip-detail',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return TripDetailScreen(
+          trip: extra?['trip'] as TripModel,
+          viewerRole: extra?['viewerRole'] as String? ?? 'pasajero',
+          viewerId: extra?['viewerId'] as String? ?? '',
         );
       },
     ),

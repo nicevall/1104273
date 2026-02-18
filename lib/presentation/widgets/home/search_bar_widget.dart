@@ -16,49 +16,47 @@ class SearchBarWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: AppColors.tertiary,
-          borderRadius: BorderRadius.circular(30),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.shadow.withOpacity(0.1),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            // Icono de búsqueda
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.search,
-                size: 20,
-                color: AppColors.textPrimary,
-              ),
-            ),
-
-            const SizedBox(width: 12),
-
-            // Texto placeholder
-            Expanded(
-              child: Text(
-                '¿A dónde vamos?',
-                style: AppTextStyles.body1.copyWith(
-                  color: AppColors.textSecondary,
+    return Material(
+      color: AppColors.tertiary,
+      borderRadius: BorderRadius.circular(30),
+      elevation: 2,
+      shadowColor: AppColors.shadow.withOpacity(0.1),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(30),
+        splashColor: AppColors.primary.withOpacity(0.08),
+        highlightColor: AppColors.primary.withOpacity(0.04),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            children: [
+              // Icono de búsqueda
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.search,
+                  size: 20,
+                  color: AppColors.textPrimary,
                 ),
               ),
-            ),
-          ],
+
+              const SizedBox(width: 12),
+
+              // Texto placeholder
+              Expanded(
+                child: Text(
+                  '¿A dónde vamos?',
+                  style: AppTextStyles.body1.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

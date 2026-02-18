@@ -57,6 +57,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // Lista de lugares recientes (cargados desde Firestore)
   List<RecentPlace> _recentPlaces = [];
 
+  // Últimos 3 viajes completados (para mostrar en home)
+  List<TripModel> _recentTrips = [];
+  bool _isLoadingRecentTrips = true;
+
   // Key para refrescar el banner de ubicación
   final GlobalKey<State> _locationBannerKey = GlobalKey();
 
@@ -108,6 +112,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Cargar destinos recientes del pasajero desde Firestore
     _loadRecentPlaces();
+
+    // Cargar últimos 3 viajes completados para mostrar en home
+    _loadRecentTrips();
+
+    // Precargar ubicación GPS en background (para que esté lista al navegar)
+    LocationCacheService().getLocation();
   }
 
   /// Carga el último rol seleccionado desde SharedPreferences
@@ -115,12 +125,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     final savedRole = prefs.getString(_activeRolePrefKey);
     if (savedRole != null && mounted) {
+      final previousRole = _activeRole;
       // Validar que el rol guardado es válido
       if (savedRole == 'conductor' && widget.hasVehicle) {
         setState(() => _activeRole = 'conductor');
         _loadDriverTrips();
       } else if (savedRole == 'pasajero') {
         setState(() => _activeRole = 'pasajero');
+      }
+      // Si el rol cambió, recargar viajes recientes con el rol correcto
+      if (_activeRole != previousRole) {
+        _loadRecentTrips();
       }
     }
   }
@@ -139,7 +154,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Pull-to-refresh para pasajero: recarga estado de ubicación y recientes
   Future<void> _refreshPassengerHome() async {
+    // Refrescar ubicación GPS en paralelo
+    LocationCacheService().getLocation(forceRefresh: true);
     await _loadRecentPlaces();
+    _loadRecentTrips();
     setState(() {});
     // Pequeño delay para feedback visual del refresh indicator
     await Future.delayed(const Duration(milliseconds: 500));
@@ -167,9 +185,81 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Carga los últimos 3 viajes completados según el rol activo
+  Future<void> _loadRecentTrips() async {
+    if (mounted) {
+      setState(() => _isLoadingRecentTrips = true);
+    }
+    try {
+      final tripsService = TripsService();
+      List<TripModel> trips;
+
+      if (_activeRole == 'conductor') {
+        trips = await tripsService.getDriverTrips(
+          widget.userId,
+          statusFilter: ['completed'],
+        );
+      } else {
+        trips = await _getPassengerRecentTrips();
+      }
+
+      // Ordenar por fecha más reciente y tomar máximo 3
+      trips.sort((a, b) {
+        final aTime = a.departureTime ?? DateTime(2000);
+        final bTime = b.departureTime ?? DateTime(2000);
+        return bTime.compareTo(aTime);
+      });
+
+      if (mounted) {
+        setState(() {
+          _recentTrips = trips.take(3).toList();
+          _isLoadingRecentTrips = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error cargando viajes recientes: $e');
+      if (mounted) {
+        setState(() => _isLoadingRecentTrips = false);
+      }
+    }
+  }
+
+  /// Obtener viajes completados donde el usuario fue pasajero
+  Future<List<TripModel>> _getPassengerRecentTrips() async {
+    final reqSnap = await FirebaseFirestore.instance
+        .collection('ride_requests')
+        .where('passengerId', isEqualTo: widget.userId)
+        .where('status', isEqualTo: 'completed')
+        .get();
+
+    final tripIds = reqSnap.docs
+        .map((d) => d.data()['tripId'] as String?)
+        .where((id) => id != null && id.isNotEmpty)
+        .toSet();
+
+    if (tripIds.isEmpty) return [];
+
+    final trips = <TripModel>[];
+    for (final tripId in tripIds) {
+      try {
+        final tripDoc = await FirebaseFirestore.instance
+            .collection('trips')
+            .doc(tripId)
+            .get();
+        if (tripDoc.exists) {
+          trips.add(TripModel.fromFirestore(tripDoc));
+        }
+      } catch (_) {}
+    }
+    return trips;
+  }
+
   /// Pull-to-refresh para conductor: recarga lista de viajes
   Future<void> _refreshDriverHome() async {
+    // Refrescar ubicación GPS en paralelo
+    LocationCacheService().getLocation(forceRefresh: true);
     _loadDriverTrips();
+    _loadRecentTrips();
     // Pequeño delay para feedback visual del refresh indicator
     await Future.delayed(const Duration(milliseconds: 500));
   }
@@ -765,6 +855,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // 3. Cambio permitido
     setState(() {
       _activeRole = newRole;
+      _isLoadingRecentTrips = true;
     });
     // Persistir el rol seleccionado
     _saveActiveRole(newRole);
@@ -772,6 +863,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (newRole == 'conductor') {
       _loadDriverTrips();
     }
+    // Recargar viajes recientes para el nuevo rol
+    _loadRecentTrips();
   }
 
   void _showVehicleRequiredDialog() {
@@ -1267,7 +1360,8 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 24),
           ],
 
-            const SizedBox(height: 24),
+            // Últimos viajes completados
+            _buildRecentTripsSection(),
 
             // Link al historial de viajes
             _buildHistorialLink(),
@@ -1325,6 +1419,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const SizedBox(height: 32),
 
+            // Últimos viajes completados
+            _buildRecentTripsSection(),
+
             // Link al historial de viajes
             _buildHistorialLink(),
 
@@ -1333,6 +1430,156 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildRecentTripsSection() {
+    // Mientras carga, mostrar skeleton shimmer
+    if (_isLoadingRecentTrips) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Viajes recientes',
+              style: AppTextStyles.h3.copyWith(fontSize: 16),
+            ),
+            const SizedBox(height: 12),
+            const _SkeletonTripCard(),
+            const SizedBox(height: 10),
+            const _SkeletonTripCard(),
+            const SizedBox(height: 10),
+            const _SkeletonTripCard(),
+            const SizedBox(height: 16),
+          ],
+        ),
+      );
+    }
+
+    // Si no hay viajes, no mostrar nada
+    if (_recentTrips.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Viajes recientes',
+            style: AppTextStyles.h3.copyWith(fontSize: 16),
+          ),
+          const SizedBox(height: 12),
+          ...List.generate(_recentTrips.length, (index) {
+            final trip = _recentTrips[index];
+            return Padding(
+              padding: EdgeInsets.only(bottom: index < _recentTrips.length - 1 ? 10 : 0),
+              child: _buildMiniTripCard(trip),
+            );
+          }),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMiniTripCard(TripModel trip) {
+    final dateStr = trip.departureTime != null
+        ? '${trip.departureTime!.day}/${trip.departureTime!.month}/${trip.departureTime!.year}'
+        : '';
+
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      elevation: 1,
+      shadowColor: AppColors.shadow.withOpacity(0.06),
+      child: InkWell(
+        onTap: () => _openTripDetail(trip),
+        borderRadius: BorderRadius.circular(12),
+        splashColor: AppColors.primary.withOpacity(0.08),
+        highlightColor: AppColors.primary.withOpacity(0.04),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.divider, width: 0.5),
+          ),
+          child: Row(
+            children: [
+              // Icono de viaje completado
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppColors.success.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.check_circle_outline,
+                  color: AppColors.success,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Origen → Destino
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      trip.origin.name,
+                      style: AppTextStyles.body2.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Icon(Icons.arrow_forward, size: 12, color: AppColors.textSecondary),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            trip.destination.name,
+                            style: AppTextStyles.caption.copyWith(
+                              color: AppColors.textSecondary,
+                              fontSize: 12,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              // Fecha
+              if (dateStr.isNotEmpty)
+                Text(
+                  dateStr,
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openTripDetail(TripModel trip) {
+    context.push('/trip/detail', extra: {
+      'trip': trip,
+      'viewerRole': _activeRole,
+      'viewerId': widget.userId,
+    });
   }
 
   Widget _buildHistorialLink() {
@@ -1425,6 +1672,103 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Skeleton shimmer para tarjeta de viaje reciente
+class _SkeletonTripCard extends StatefulWidget {
+  const _SkeletonTripCard();
+
+  @override
+  State<_SkeletonTripCard> createState() => _SkeletonTripCardState();
+}
+
+class _SkeletonTripCardState extends State<_SkeletonTripCard>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _animation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat();
+    _animation = Tween<double>(begin: -1.0, end: 2.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, child) {
+        return Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.divider, width: 0.5),
+          ),
+          child: Row(
+            children: [
+              // Icono skeleton
+              _buildShimmerBox(width: 36, height: 36, borderRadius: 10),
+              const SizedBox(width: 12),
+              // Texto skeleton
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildShimmerBox(width: 140, height: 12, borderRadius: 4),
+                    const SizedBox(height: 6),
+                    _buildShimmerBox(width: 100, height: 10, borderRadius: 4),
+                  ],
+                ),
+              ),
+              // Fecha skeleton
+              _buildShimmerBox(width: 55, height: 10, borderRadius: 4),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildShimmerBox({
+    required double width,
+    required double height,
+    required double borderRadius,
+  }) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(borderRadius),
+        gradient: LinearGradient(
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+          colors: const [
+            Color(0xFFEEEEEE),
+            Color(0xFFF5F5F5),
+            Color(0xFFEEEEEE),
+          ],
+          stops: [
+            (_animation.value - 0.3).clamp(0.0, 1.0),
+            _animation.value.clamp(0.0, 1.0),
+            (_animation.value + 0.3).clamp(0.0, 1.0),
+          ],
+        ),
       ),
     );
   }

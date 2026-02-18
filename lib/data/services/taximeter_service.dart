@@ -103,7 +103,9 @@ class TaximeterSession {
     _recalculateFare();
   }
 
-  /// Recalcular la tarifa actual con PricingService + descuento grupal
+  /// Recalcular la tarifa actual con PricingService
+  /// El descuento grupal NO se aplica durante la carrera — solo al final
+  /// (al presionar "Dejar" o "Finalizar viaje") para que sea sobre el total real
   void _recalculateFare() {
     final result = PricingService().calculateLiveFare(
       distanceKm: totalDistanceKm,
@@ -112,9 +114,19 @@ class TaximeterSession {
     );
     fareBeforeDiscount = result.price;
     discountPercent = PricingService.getGroupDiscountPercent(groupSize);
-    currentFare = PricingService.applyGroupDiscount(result.price, groupSize);
+    // Durante la carrera, currentFare = precio SIN descuento
+    // El descuento se aplica solo al finalizar via getFinalFare()
+    currentFare = result.price;
     breakdown = result.breakdown;
   }
+
+  /// Obtener la tarifa final CON descuento grupal aplicado
+  /// Usar solo al momento de "Dejar" pasajero o "Finalizar viaje"
+  double get finalFare =>
+      PricingService.applyGroupDiscount(currentFare, groupSize);
+
+  /// Monto del descuento en dólares
+  double get discountAmount => currentFare - finalFare;
 
   /// Actualizar el tamaño del grupo (recalcula descuento)
   void updateGroupSize(int newSize) {

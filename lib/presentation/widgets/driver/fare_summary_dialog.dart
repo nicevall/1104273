@@ -136,22 +136,29 @@ class FareSummaryDialog extends StatelessWidget {
               '${session.totalWaitMinutes.round()} min espera',
               '\$${waitCost.toStringAsFixed(2)}',
             ),
-          // Descuento grupal
-          if (session.discountPercent > 0)
+          // Subtotal (antes de descuento)
+          if (session.discountPercent > 0) ...[
+            const Divider(height: 16),
+            _buildRow(
+              'Subtotal',
+              '\$${session.currentFare.toStringAsFixed(2)}',
+            ),
             _buildRow(
               'Desc. grupo (${(session.discountPercent * 100).round()}%)',
-              '-\$${(session.fareBeforeDiscount - session.currentFare).toStringAsFixed(2)}',
+              '-\$${session.discountAmount.toStringAsFixed(2)}',
               color: AppColors.success,
             ),
+          ],
           const Divider(height: 20),
 
-          // Total (con redondeo si es efectivo)
+          // Total (con descuento aplicado y redondeo si es efectivo)
           Builder(builder: (context) {
+            final fareWithDiscount = session.finalFare;
             final isCash = paymentMethod == 'Efectivo';
             final displayFare = isCash
-                ? PricingService.roundUpToNickel(session.currentFare)
-                : session.currentFare;
-            final wasRounded = isCash && displayFare != session.currentFare;
+                ? PricingService.roundUpToNickel(fareWithDiscount)
+                : fareWithDiscount;
+            final wasRounded = isCash && displayFare != fareWithDiscount;
 
             return Column(
               children: [

@@ -91,6 +91,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   bool _hasAnnouncedCurrentStep = false;
   bool _isCalculatingRoute = false;
   int _lastAcceptedCount = 0;
+  int _lastPendingPickupCount = 0; // Pasajeros accepted (sin recoger)
 
   // === Solicitudes ===
   List<RideRequestModel> _pendingRequests = [];
@@ -490,12 +491,16 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     // Fix C2: Solo setState si algo cambió visiblemente
     if (posChanged || navChanged || meterChanged) {
       // 1. Marker — posición GPS directa, rotación sigue el bearing
+      // Con brújula: flat:true rota con el mapa, así que rotation debe ser
+      // la diferencia entre dirección de movimiento y heading de la brújula
+      // para que el carro apunte hacia donde se mueve (no hacia donde mira el teléfono)
+      // Sin brújula: el mapa rota con carHeading, marker apunta al norte (rotation: 0)
       final driverMarker = Marker(
         markerId: const MarkerId('driver'),
         position: LatLng(position.latitude, position.longitude),
         icon: _carIcon ?? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
         anchor: const Offset(0.5, 0.5),
-        rotation: _useCompass ? _compassHeading : _lastCameraHeading,
+        rotation: _useCompass ? (carHeading - _compassHeading) : 0,
         flat: true,
       );
 
@@ -632,7 +637,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
   // CÁLCULO DE RUTA + POLYLINE
   // ============================================================
 
-  Future<void> _calculateRoute() async {
+  Future<void> _calculateRoute({String? excludePassengerId}) async {
     if (_currentTrip == null || _currentPosition == null || _isCalculatingRoute) {
       return;
     }
@@ -641,8 +646,12 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
     try {
       // Recoger los pickups de pasajeros aceptados que aún no han subido
+      // excludePassengerId: pasajero recién recogido (Firestore aún no actualizó)
       final acceptedPickups = _currentTrip!.passengers
-          .where((p) => p.status == 'accepted' && p.pickupPoint != null)
+          .where((p) =>
+              p.status == 'accepted' &&
+              p.pickupPoint != null &&
+              p.userId != excludePassengerId)
           .map((p) => LatLng(p.pickupPoint!.latitude, p.pickupPoint!.longitude))
           .toList();
 
@@ -786,12 +795,12 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       final session = _taximeterService.stopMeter(passenger.userId);
       if (session != null) sessions[passenger.userId] = session;
 
-      // Drop off en Firestore
+      // Drop off en Firestore (con descuento grupal aplicado al total)
       try {
         await _tripsService.dropOffPassenger(
           widget.tripId,
           passenger.userId,
-          finalFare: session?.currentFare ?? 0,
+          finalFare: session?.finalFare ?? 0,
           dropoffLatitude: _currentPosition?.latitude ?? 0,
           dropoffLongitude: _currentPosition?.longitude ?? 0,
           totalDistanceKm: session?.totalDistanceKm ?? 0,
@@ -871,7 +880,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
             driverId: driverId,
             passengerId: passenger.userId,
             passengerName: name,
-            fare: session?.currentFare ?? 0,
+            fare: session?.finalFare ?? 0,
           ),
         ),
       );
@@ -1171,8 +1180,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
     _chatService.deactivateChat(widget.tripId, passengerId);
 
     _resetWaitingState();
-    // Recalcular ruta sin este pickup
-    _calculateRoute();
+    // Recalcular ruta excluyendo este pickup (Firestore aún no actualizó el status)
+    _calculateRoute(excludePassengerId: passengerId);
   }
 
   void _handlePassengerNoShow() {
@@ -1234,7 +1243,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                     });
 
                     _resetWaitingState();
-                    _calculateRoute();
+                    // Recalcular ruta excluyendo este pickup
+                    _calculateRoute(excludePassengerId: passengerId);
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.error,
@@ -1414,7 +1424,8 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
           ],
         ),
         content: Text(
-          'Tarifa actual: \$${session.currentFare.toStringAsFixed(2)}\n'
+          'Tarifa: \$${session.currentFare.toStringAsFixed(2)}'
+          '${session.discountPercent > 0 ? ' → \$${session.finalFare.toStringAsFixed(2)} (-${(session.discountPercent * 100).round()}%)' : ''}\n'
           'Distancia: ${session.totalDistanceKm.toStringAsFixed(1)} km\n'
           'Tiempo: ${session.elapsedFormatted}\n\n'
           '¿Confirmas que el pasajero se baja aquí?',
@@ -1489,7 +1500,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
       await _tripsService.dropOffPassenger(
         widget.tripId,
         passengerId,
-        finalFare: finalSession.currentFare,
+        finalFare: finalSession.finalFare,
         dropoffLatitude: _currentPosition?.latitude ?? 0,
         dropoffLongitude: _currentPosition?.longitude ?? 0,
         totalDistanceKm: finalSession.totalDistanceKm,
@@ -1517,7 +1528,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
 
     // TTS — esperar a que termine antes de mostrar diálogo
     await _ttsService.speakAnnouncement(
-      'Pasajero dejado. Tarifa: \$${finalSession.currentFare.toStringAsFixed(2)}',
+      'Pasajero dejado. Tarifa: \$${finalSession.finalFare.toStringAsFixed(2)}',
     );
 
     // Mostrar resumen de tarifa y esperar confirmación de pago
@@ -1551,7 +1562,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                 driverId: _currentTrip?.driverId ?? '',
                 passengerId: passengerId,
                 passengerName: name,
-                fare: finalSession.currentFare,
+                fare: finalSession.finalFare,
               ),
             ),
           );
@@ -1803,7 +1814,7 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
             driverId: _currentTrip?.driverId ?? '',
             passengerId: passengerId,
             passengerName: passengerName,
-            fare: session.currentFare,
+            fare: session.finalFare,
           ),
         ),
       );
@@ -2117,13 +2128,23 @@ class _DriverActiveTripScreenState extends State<DriverActiveTripScreen>
                 _restoreTaximetersIfNeeded(trip);
 
                 // Calcular ruta al inicio o cuando cambian los pasajeros
+                final pendingPickup = trip.passengers
+                    .where((p) => p.status == 'accepted')
+                    .length;
                 if (_currentRoute == null && _currentPosition != null) {
+                  _lastAcceptedCount = trip.acceptedPassengersCount;
+                  _lastPendingPickupCount = pendingPickup;
                   _calculateRoute();
                 } else if (trip.acceptedPassengersCount != _lastAcceptedCount) {
                   _lastAcceptedCount = trip.acceptedPassengersCount;
+                  _lastPendingPickupCount = pendingPickup;
                   _ttsService.speakAnnouncement(
                     'Ruta actualizada. Nuevo pasajero agregado.',
                   );
+                  _calculateRoute();
+                } else if (pendingPickup != _lastPendingPickupCount) {
+                  // Pasajero cambió de accepted→picked_up: quitar su pickup de la ruta
+                  _lastPendingPickupCount = pendingPickup;
                   _calculateRoute();
                 }
               });
@@ -4098,23 +4119,29 @@ class _PaymentTabsSheetState extends State<_PaymentTabsSheet> {
               '${session.totalWaitMinutes.round()} min espera',
               '\$${waitCost.toStringAsFixed(2)}',
             ),
-          // Descuento grupal
+          // Subtotal y descuento grupal
           if (session.discountPercent > 0) ...[
+            const Divider(height: 16),
+            _buildFareRow(
+              'Subtotal',
+              '\$${session.currentFare.toStringAsFixed(2)}',
+            ),
             _buildFareRow(
               'Desc. grupo (${(session.discountPercent * 100).round()}%)',
-              '-\$${(session.fareBeforeDiscount - session.currentFare).toStringAsFixed(2)}',
+              '-\$${session.discountAmount.toStringAsFixed(2)}',
               valueColor: AppColors.success,
             ),
           ],
           const Divider(height: 20),
 
-          // Total (con redondeo a $0.05 si es efectivo)
+          // Total (con descuento aplicado y redondeo a $0.05 si es efectivo)
           Builder(builder: (context) {
+            final fareWithDiscount = session.finalFare;
             final isCash = passenger.paymentMethod == 'Efectivo';
             final displayFare = isCash
-                ? PricingService.roundUpToNickel(session.currentFare)
-                : session.currentFare;
-            final wasRounded = isCash && displayFare != session.currentFare;
+                ? PricingService.roundUpToNickel(fareWithDiscount)
+                : fareWithDiscount;
+            final wasRounded = isCash && displayFare != fareWithDiscount;
 
             return Column(
               children: [

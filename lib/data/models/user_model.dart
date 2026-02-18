@@ -17,6 +17,8 @@ class UserModel extends Equatable {
   final bool hasVehicle; // true si tiene vehículo registrado
   final double rating;
   final int totalTrips;
+  final int tripsAsDriver;
+  final int tripsAsPassenger;
   final String? profilePhotoUrl;
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -38,6 +40,8 @@ class UserModel extends Equatable {
     this.hasVehicle = false,
     this.rating = 5.0,
     this.totalTrips = 0,
+    this.tripsAsDriver = 0,
+    this.tripsAsPassenger = 0,
     this.profilePhotoUrl,
     required this.createdAt,
     required this.updatedAt,
@@ -74,6 +78,8 @@ class UserModel extends Equatable {
       hasVehicle: json['hasVehicle'] as bool? ?? false,
       rating: (json['rating'] as num?)?.toDouble() ?? 5.0,
       totalTrips: json['totalTrips'] as int? ?? 0,
+      tripsAsDriver: json['tripsAsDriver'] as int? ?? 0,
+      tripsAsPassenger: json['tripsAsPassenger'] as int? ?? 0,
       profilePhotoUrl: json['profilePhotoUrl'] as String?,
       createdAt: (json['createdAt'] as Timestamp).toDate(),
       updatedAt: (json['updatedAt'] as Timestamp).toDate(),
@@ -101,6 +107,8 @@ class UserModel extends Equatable {
       'hasVehicle': hasVehicle,
       'rating': rating,
       'totalTrips': totalTrips,
+      'tripsAsDriver': tripsAsDriver,
+      'tripsAsPassenger': tripsAsPassenger,
       'profilePhotoUrl': profilePhotoUrl,
       'createdAt': Timestamp.fromDate(createdAt),
       'updatedAt': Timestamp.fromDate(updatedAt),
@@ -131,6 +139,8 @@ class UserModel extends Equatable {
     bool? hasVehicle,
     double? rating,
     int? totalTrips,
+    int? tripsAsDriver,
+    int? tripsAsPassenger,
     String? profilePhotoUrl,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -152,6 +162,8 @@ class UserModel extends Equatable {
       hasVehicle: hasVehicle ?? this.hasVehicle,
       rating: rating ?? this.rating,
       totalTrips: totalTrips ?? this.totalTrips,
+      tripsAsDriver: tripsAsDriver ?? this.tripsAsDriver,
+      tripsAsPassenger: tripsAsPassenger ?? this.tripsAsPassenger,
       profilePhotoUrl: profilePhotoUrl ?? this.profilePhotoUrl,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -176,6 +188,8 @@ class UserModel extends Equatable {
         hasVehicle,
         rating,
         totalTrips,
+        tripsAsDriver,
+        tripsAsPassenger,
         profilePhotoUrl,
         createdAt,
         updatedAt,

@@ -136,6 +136,8 @@ class VehicleSummaryScreen extends StatelessWidget {
                               _buildDataRow('Categoría', licenseData!['categoria']),
                             if (licenseData?['fecha_vencimiento'] != null)
                               _buildDataRow('Vencimiento', licenseData!['fecha_vencimiento']),
+                            if (licenseData?['tipo_sangre'] != null)
+                              _buildDataRow('Tipo sangre', licenseData!['tipo_sangre']),
                             _buildDataRow(
                               'Propietario',
                               _getOwnershipLabel(vehicleOwnership),
@@ -154,7 +156,8 @@ class VehicleSummaryScreen extends StatelessWidget {
                           icon: Icons.verified,
                           children: [
                             _buildDocumentRow('Matrícula vehicular', true),
-                            _buildDocumentRow('Licencia de conducir', true),
+                            _buildDocumentRow('Licencia (frente)', true),
+                            _buildDocumentRow('Licencia (reverso)', true),
                             _buildDocumentRow('Foto del vehículo', true),
                           ],
                         ),

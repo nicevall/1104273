@@ -27,16 +27,7 @@ class PermissionHandlerService {
   ///
   /// En Android 13+: photos, en versiones anteriores: storage
   Future<bool> requestGalleryPermission() async {
-    // Android 13+ usa Permission.photos
-    // Android < 13 usa Permission.storage
-    Permission permission;
-
-    // Determinar qué permiso usar según versión Android
-    if (await Permission.photos.isPermanentlyDenied) {
-      permission = Permission.photos;
-    } else {
-      permission = Permission.storage;
-    }
+    final permission = await _getGalleryPermission();
 
     final status = await permission.request();
 
@@ -110,7 +101,7 @@ class PermissionHandlerService {
   /// Abrir configuración de la app
   ///
   /// Útil cuando el usuario negó permisos permanentemente
-  Future<void> openAppSettings() async {
+  Future<void> openSettings() async {
     await openAppSettings();
   }
 
@@ -259,11 +250,16 @@ class PermissionHandlerService {
   Future<Permission> _getGalleryPermission() async {
     // Android 13+ (API 33+) usa Permission.photos
     // Android < 13 usa Permission.storage
-    if (await Permission.photos.isPermanentlyDenied ||
-        await Permission.photos.isGranted) {
-      return Permission.photos;
+    //
+    // Estrategia: intentar Permission.photos primero.
+    // Si está granted, permanentlyDenied, o denied (pero no restricted),
+    // significa que el OS lo reconoce → Android 13+.
+    // Si está restricted, el OS no lo soporta → Android < 13 → usar storage.
+    final photosStatus = await Permission.photos.status;
+    if (photosStatus == PermissionStatus.restricted) {
+      return Permission.storage;
     }
-    return Permission.storage;
+    return Permission.photos;
   }
 
   /// Verificar todos los permisos necesarios para conductor

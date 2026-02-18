@@ -5,6 +5,7 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_text_styles.dart';
 import '../../../data/models/trip_model.dart';
@@ -176,20 +177,25 @@ class _ActivityScreenState extends State<ActivityScreen> {
         ? '${trip.departureTime!.day}/${trip.departureTime!.month}/${trip.departureTime!.year}'
         : 'Sin fecha';
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      elevation: 2,
+      shadowColor: AppColors.shadow.withOpacity(0.08),
+      child: InkWell(
+        onTap: () {
+          context.push('/trip/detail', extra: {
+            'trip': trip,
+            'viewerRole': widget.activeRole,
+            'viewerId': widget.userId,
+          });
+        },
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.shadow.withOpacity(0.08),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
+        splashColor: AppColors.primary.withOpacity(0.08),
+        highlightColor: AppColors.primary.withOpacity(0.04),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Fecha + Badge completado
@@ -291,6 +297,8 @@ class _ActivityScreenState extends State<ActivityScreen> {
             ],
           ),
         ],
+      ),
+        ),
       ),
     );
   }

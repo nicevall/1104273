@@ -14,6 +14,7 @@ import '../../../core/constants/app_text_styles.dart';
 import '../../../data/models/vehicle_model.dart';
 import '../../../data/services/firestore_service.dart';
 import '../../../data/services/firebase_storage_service.dart';
+import '../../../data/services/permission_handler_service.dart';
 import '../../blocs/auth/auth_bloc.dart';
 import '../../blocs/auth/auth_event.dart';
 import '../../blocs/auth/auth_state.dart';
@@ -38,10 +39,54 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _isLoadingVehicle = true;
   bool _isUploadingPhoto = false;
 
+  // Datos del usuario cargados directamente de Firestore
+  String _userName = 'Usuario';
+  String _userEmail = 'correo@uide.edu.ec';
+  double _userRating = 5.0;
+  int _totalTrips = 0;
+  int _tripsAsDriver = 0;
+  int _tripsAsPassenger = 0;
+  String _userRole = 'pasajero';
+  String? _profilePhotoUrl;
+  String _career = '';
+  int _semester = 0;
+  String _phoneNumber = '';
+  DateTime? _createdAt;
+  bool _isLoadingUser = true;
+
   @override
   void initState() {
     super.initState();
+    _loadUserData();
     _loadVehicle();
+  }
+
+  Future<void> _loadUserData() async {
+    try {
+      final user = await FirestoreService().getUser(widget.userId);
+      if (user != null && mounted) {
+        setState(() {
+          _userName = user.fullName;
+          _userEmail = user.email;
+          _userRating = user.rating;
+          _totalTrips = user.totalTrips;
+          _tripsAsDriver = user.tripsAsDriver;
+          _tripsAsPassenger = user.tripsAsPassenger;
+          _userRole = user.role;
+          _profilePhotoUrl = user.profilePhotoUrl;
+          _career = user.career;
+          _semester = user.semester;
+          _phoneNumber = user.phoneNumber;
+          _createdAt = user.createdAt;
+          _isLoadingUser = false;
+        });
+      } else if (mounted) {
+        setState(() => _isLoadingUser = false);
+      }
+    } catch (e) {
+      debugPrint('Error cargando datos de usuario: $e');
+      if (mounted) setState(() => _isLoadingUser = false);
+    }
   }
 
   Future<void> _loadVehicle() async {
@@ -65,6 +110,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _pickAndUploadPhoto() async {
+    // Solicitar permiso de galería con diálogo educativo
+    final permissionService = PermissionHandlerService();
+    final hasPermission = await permissionService.requestGalleryWithDialog(context);
+
+    if (!hasPermission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Se necesita permiso de galería para cambiar tu foto'),
+            backgroundColor: AppColors.warning,
+          ),
+        );
+      }
+      return;
+    }
+
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(
       source: ImageSource.gallery,
@@ -86,13 +147,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
 
       // Actualizar profilePhotoUrl en Firestore
+      // Nota: profilePhotoUrl es único por usuario — aplica para ambos roles
+      // (pasajero y conductor comparten la misma foto de perfil)
       await FirestoreService().updateUserFields(widget.userId, {
         'profilePhotoUrl': downloadUrl,
       });
 
-      // Refrescar AuthBloc para obtener datos actualizados
+      // Refrescar datos locales y AuthBloc
       if (mounted) {
+        setState(() => _profilePhotoUrl = downloadUrl);
         context.read<AuthBloc>().add(const UpdateUserEvent());
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Foto de perfil actualizada'),
+            backgroundColor: AppColors.success,
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -112,86 +182,66 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return BlocConsumer<AuthBloc, AuthState>(
+    return BlocListener<AuthBloc, AuthState>(
       listener: (context, state) {
         if (state is Unauthenticated) {
           context.go('/welcome');
         }
       },
-      builder: (context, state) {
-        String userName = 'Usuario';
-        String userEmail = 'correo@uide.edu.ec';
-        double userRating = 5.0;
-        int totalTrips = 0;
-        String? profilePhotoUrl;
-        String career = '';
-        int semester = 0;
-        String phoneNumber = '';
-        DateTime? createdAt;
-
-        if (state is Authenticated) {
-          final user = state.user;
-          userName = user.fullName;
-          userEmail = user.email;
-          userRating = user.rating;
-          totalTrips = user.totalTrips;
-          profilePhotoUrl = user.profilePhotoUrl;
-          career = user.career;
-          semester = user.semester;
-          phoneNumber = user.phoneNumber;
-          createdAt = user.createdAt;
-        }
-
-        return Scaffold(
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
           backgroundColor: AppColors.background,
-          appBar: AppBar(
-            backgroundColor: AppColors.background,
-            elevation: 0,
-            title: Text('Perfil', style: AppTextStyles.h2),
-            centerTitle: false,
-          ),
-          body: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 20),
+          elevation: 0,
+          title: Text('Perfil', style: AppTextStyles.h2),
+          centerTitle: false,
+        ),
+        body: _isLoadingUser
+            ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+            : SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 20),
 
-                // Header: Avatar + Nombre + Email + Rating + Badge
-                _buildProfileHeader(
-                  userName: userName,
-                  userEmail: userEmail,
-                  userRating: userRating,
-                  totalTrips: totalTrips,
-                  profilePhotoUrl: profilePhotoUrl,
+                    // Header: Avatar + Nombre + Email + Rating + Badge
+                    _buildProfileHeader(
+                      userName: _userName,
+                      userEmail: _userEmail,
+                      userRating: _userRating,
+                      totalTrips: _totalTrips,
+                      tripsAsDriver: _tripsAsDriver,
+                      tripsAsPassenger: _tripsAsPassenger,
+                      userRole: _userRole,
+                      profilePhotoUrl: _profilePhotoUrl,
+                    ),
+
+                    const SizedBox(height: 28),
+
+                    // Info personal
+                    _buildInfoSection(
+                      career: _career,
+                      semester: _semester,
+                      phoneNumber: _phoneNumber,
+                      createdAt: _createdAt,
+                    ),
+
+                    // Vehículo (solo conductor)
+                    if (widget.activeRole == 'conductor') ...[
+                      const SizedBox(height: 20),
+                      _buildVehicleSection(),
+                    ],
+
+                    const SizedBox(height: 28),
+
+                    // Quick links
+                    _buildQuickLinks(context),
+
+                    const SizedBox(height: 40),
+                  ],
                 ),
-
-                const SizedBox(height: 28),
-
-                // Info personal
-                _buildInfoSection(
-                  career: career,
-                  semester: semester,
-                  phoneNumber: phoneNumber,
-                  createdAt: createdAt,
-                ),
-
-                // Vehículo (solo conductor)
-                if (widget.activeRole == 'conductor') ...[
-                  const SizedBox(height: 20),
-                  _buildVehicleSection(),
-                ],
-
-                const SizedBox(height: 28),
-
-                // Quick links
-                _buildQuickLinks(context),
-
-                const SizedBox(height: 40),
-              ],
-            ),
-          ),
-        );
-      },
+              ),
+      ),
     );
   }
 
@@ -204,6 +254,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required String userEmail,
     required double userRating,
     required int totalTrips,
+    required int tripsAsDriver,
+    required int tripsAsPassenger,
+    required String userRole,
     String? profilePhotoUrl,
   }) {
     return Center(
@@ -298,13 +351,49 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              const SizedBox(width: 4),
-              Text(
-                '($totalTrips viajes)',
-                style: AppTextStyles.caption,
-              ),
             ],
           ),
+          const SizedBox(height: 8),
+
+          // Viajes por rol
+          if (userRole == 'ambos') ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildTripCountChip(
+                  icon: Icons.directions_car,
+                  count: tripsAsDriver,
+                  label: 'como conductor',
+                ),
+                const SizedBox(width: 12),
+                _buildTripCountChip(
+                  icon: Icons.directions_walk,
+                  count: tripsAsPassenger,
+                  label: 'como pasajero',
+                ),
+              ],
+            ),
+          ] else ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  widget.activeRole == 'conductor'
+                      ? Icons.directions_car
+                      : Icons.directions_walk,
+                  size: 14,
+                  color: AppColors.textSecondary,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '$totalTrips viajes',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ],
 
           const SizedBox(height: 10),
 
@@ -334,6 +423,34 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTripCountChip({
+    required IconData icon,
+    required int count,
+    required String label,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: AppColors.tertiary,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: AppColors.textSecondary),
+          const SizedBox(width: 4),
+          Text(
+            '$count $label',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w500,
             ),
           ),
         ],

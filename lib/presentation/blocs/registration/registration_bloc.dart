@@ -290,25 +290,15 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
       // Esto evita errores de "unauthenticated" si el proceso de registro fue largo
       await _authService.refreshToken();
 
-      // 1. Subir foto del vehículo
+      // NOTA: No se suben fotos de documentos (licencia, matrícula) a Storage
+      // por política de datos sensibles. Solo se guardan los datos extraídos por OCR.
+      // La foto del vehículo sí se sube (no es información sensible).
       final vehiclePhotoUrl = await _storageService.uploadVehiclePhoto(
         userId: userId,
         imageFile: event.vehiclePhoto,
       );
 
-      // 2. Subir foto de licencia
-      final licensePhotoUrl = await _storageService.uploadLicensePhoto(
-        userId: userId,
-        imageFile: event.licensePhoto,
-      );
-
-      // 3. Subir foto de matrícula
-      final registrationPhotoUrl = await _storageService.uploadRegistrationPhoto(
-        userId: userId,
-        imageFile: event.registrationPhoto,
-      );
-
-      // 4. Registrar vehículo con Cloud Function dedicada
+      // Registrar vehículo con Cloud Function dedicada
       // El usuario ya fue registrado en Step 5, solo falta el vehículo
       await _authService.registerVehicle(
         vehicle: {
@@ -321,11 +311,11 @@ class RegistrationBloc extends Bloc<RegistrationEvent, RegistrationState> {
           'vinChasis': event.vinChasis,
           'claseVehiculo': event.claseVehiculo,
           'pasajeros': event.pasajeros,
-          // URLs de fotos (para verificación manual)
+          // Solo foto del vehículo (no se suben docs sensibles)
           'photoUrl': vehiclePhotoUrl,
-          'licensePhotoUrl': licensePhotoUrl,
-          'registrationPhotoUrl': registrationPhotoUrl,
-          // Datos de licencia extraídos
+          'licensePhotoUrl': null,
+          'registrationPhotoUrl': null,
+          // Datos de licencia extraídos por OCR
           'licenseNumber': event.licenseNumber,
           'licenseHolderName': event.licenseHolderName,
           'licenseCategory': event.licenseCategory,

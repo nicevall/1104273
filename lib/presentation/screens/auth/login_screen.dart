@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_colors.dart';
@@ -401,11 +402,18 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: TextField(
                   controller: _emailPrefixController,
                   focusNode: _emailFocusNode,
-                  keyboardType: TextInputType.emailAddress,
+                  keyboardType: TextInputType.text,
                   textInputAction: TextInputAction.next,
                   style: AppTextStyles.body1,
                   cursorColor: AppColors.primary,
                   onSubmitted: (_) => _passwordFocusNode.requestFocus(),
+                  inputFormatters: [
+                    // Solo permitir caracteres válidos para la parte local del email
+                    // Letras, números, puntos, guiones y guiones bajos
+                    FilteringTextInputFormatter.allow(
+                      RegExp(r'[a-zA-Z0-9._\-]'),
+                    ),
+                  ],
                   decoration: InputDecoration(
                     hintText: 'johndoe',
                     hintStyle: TextStyle(
